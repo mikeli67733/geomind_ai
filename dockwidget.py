@@ -125,7 +125,7 @@ class ImageInterpretDockWidget(QDockWidget):
         server_layout = QHBoxLayout()
         server_layout.addWidget(QLabel("服务地址:"))
         self.server_url_edit = QLineEdit()
-        self.server_url_edit.setPlaceholderText("http://127.0.0.1:8000")
+        self.server_url_edit.setPlaceholderText("https://application-showed-revolutionary-flooring.trycloudflare.com")
         server_layout.addWidget(self.server_url_edit)
         server_group.setLayout(server_layout)
         main_layout.addWidget(server_group)
