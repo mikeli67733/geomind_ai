@@ -36,7 +36,7 @@ if RASTER_LAYER_FILTER is None:
 class ImageInterpretDockWidget(QDockWidget):
     # 模型配置：(显示名称, model_key, UI模式)
     MODELS = [
-        ("土地利用/多要素识别 (LANDUSE)", "LANDUSE_WATER", "landuse"),
+        ("土地利用/多要素识别 (LANDUSE)", "LANDUSE", "landuse"),
         ("SAM3 提示词通用大模型 (SAM3)", "SAM3_MODEL", "sam3"),
     ]
 
