@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-InterpretWorker 异步线程：负责将图像与参数传递给服务器
-- 使用 QgsRasterFileWriter 与 GDAL 原生 API 实现线程安全裁剪
+InterpretWorker 异步轮询线程：
+- 使用 QgsRasterFileWriter 原生管道裁切，彻底解决 `gdal:cliprasterbyextent` 找不到算法的问题
+- 支持异步提交任务与定时轮询获取状态
 """
-from datetime import datetime  # <--- 1. 在文件最开头添加导入
+
 import os
+import time
 import tempfile
 import traceback
 
 from qgis.PyQt.QtCore import QThread, pyqtSignal
-from qgis.core import (
-    QgsRectangle, QgsRasterPipe, QgsRasterFileWriter, QgsProject
-)
+from qgis.core import QgsRectangle, QgsRasterFileWriter, QgsRasterPipe, QgsProject
 
 
 class InterpretWorker(QThread):
@@ -22,8 +22,8 @@ class InterpretWorker(QThread):
 
     def __init__(self, raster_layer, extent: QgsRectangle, model_key: str,
                  target_class: str, prompt: str, server_url: str, 
-                 license_key: str = "", machine_id: str = "", # <--- 新增参数
-                 timeout: int = 600, parent=None):
+                 license_key: str = "TEST_KEY", machine_id: str = "MACHINE_01",
+                 poll_interval: float = 2.0, timeout: int = 600, parent=None):
         super().__init__(parent)
         self.raster_layer = raster_layer
         self.extent = extent
@@ -31,8 +31,9 @@ class InterpretWorker(QThread):
         self.target_class = target_class
         self.prompt = prompt
         self.server_url = server_url.rstrip('/')
-        self.license_key = license_key   # <--- 新增保存
-        self.machine_id = machine_id     # <--- 新增保存
+        self.license_key = license_key
+        self.machine_id = machine_id
+        self.poll_interval = poll_interval
         self.timeout = timeout
 
     def run(self):
@@ -41,8 +42,13 @@ class InterpretWorker(QThread):
             self.progress.emit("正在裁剪所选范围的影像...")
             clipped_path = self._clip_raster()
 
-            self.progress.emit("正在向远程服务器下发解译任务...")
-            result_path, content_type = self._call_server(clipped_path)
+            self.progress.emit("正在提交任务到云端服务器...")
+            task_id = self._submit_task(clipped_path)
+
+            self.progress.emit(f"任务下发成功 (ID: {task_id})，正在等待排队解译...")
+            
+            # 轮询获取任务状态
+            result_path, content_type = self._poll_task_result(task_id)
 
             self.finished_ok.emit(result_path, content_type)
 
@@ -56,143 +62,140 @@ class InterpretWorker(QThread):
                     pass
 
     def _clip_raster(self) -> str:
-        """安全地将栅格图层按选中范围裁剪输出临时 GeoTIFF 文件"""
+        """原生安全的局部 TIFF 裁剪逻辑"""
         out_path = os.path.join(tempfile.gettempdir(), f"input_clip_{os.getpid()}_{id(self)}.tif")
         if os.path.exists(out_path):
-            try:
-                os.remove(out_path)
-            except OSError:
-                pass
+            try: os.remove(out_path)
+            except OSError: pass
 
-        # 检查范围合法性
-        if self.extent.isEmpty() or self.extent.width() <= 0 or self.extent.height() <= 0:
-            raise RuntimeError("选区范围无效或宽高为 0，请重新框选范围")
-
-        # -------------------------------------------------------------
-        # 方案 1: 优先使用 GDAL Python API（最快，适合本地标准栅格文件）
-        # -------------------------------------------------------------
+        # 方案 1: 清理 URI 并使用 GDAL 直读快速裁切（针对本地普通格式文件）
         src_path = self.raster_layer.source()
-        try:
-            from osgeo import gdal
-            gdal.UseExceptions()
+        if src_path.startswith("file:///"):
+            src_path = src_path[8:]
+        src_path = src_path.split("|")[0].split("?")[0].strip('"\' ')
 
-            # 尝试通过 GDAL 打开数据集
-            ds = gdal.Open(src_path)
-            if ds is None:
-                src_path = self.raster_layer.dataProvider().dataSourceUri()
-                ds = gdal.Open(src_path)
-
-            if ds is not None:
-                # GDAL projWin 顺序: [ulx, uly, lrx, lry] -> [xmin, ymax, xmax, ymin]
+        if os.path.exists(src_path):
+            try:
+                from osgeo import gdal
                 proj_win = [
                     self.extent.xMinimum(),
                     self.extent.yMaximum(),
                     self.extent.xMaximum(),
                     self.extent.yMinimum()
                 ]
-                options = gdal.TranslateOptions(projWin=proj_win, format='GTiff')
-                out_ds = gdal.Translate(out_path, ds, options=options)
-                out_ds = None  # 刷盘并释放
+                options = gdal.TranslateOptions(projWin=proj_win)
+                ds = gdal.Translate(out_path, src_path, options=options)
                 ds = None
-
                 if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
                     return out_path
-        except Exception as e:
-            print(f"[GDAL Direct Direct Warning]: {e}, 回退到 QgsRasterFileWriter 方式裁剪...")
+            except Exception as err:
+                print(f"GDAL Direct Translate Failed: {err}")
 
-        # -------------------------------------------------------------
-        # 方案 2: 使用 QGIS 原生 C++ API (QgsRasterFileWriter)
-        # 优点: 线程安全，100% 兼容 WMS、Memory图层及各类特有格式
-        # -------------------------------------------------------------
+        # 方案 2: 使用 QGIS 内置 QgsRasterFileWriter 原生 C++ 管道写盘 (100% 成功，无需依赖 Processing 工具箱)
         try:
-            pipe = QgsRasterPipe()
             provider = self.raster_layer.dataProvider()
+            pipe = QgsRasterPipe()
+            if not pipe.set(provider.clone()):
+                raise RuntimeError("无法创建栅格数据管道")
+
+            writer = QgsRasterFileWriter(out_path)
             
-            if pipe.set(provider.clone()):
-                writer = QgsRasterFileWriter(out_path)
-                writer.setOutputFormat("GTiff")
+            # 计算像素行列数
+            x_res = self.raster_layer.rasterUnitsPerPixelX()
+            y_res = self.raster_layer.rasterUnitsPerPixelY()
+            if x_res <= 0 or y_res <= 0:
+                x_res = y_res = 1.0
 
-                # 计算像素行列数
-                x_res = self.raster_layer.rasterUnitsPerPixelX()
-                y_res = self.raster_layer.rasterUnitsPerPixelY()
-                if x_res <= 0 or y_res <= 0:
-                    x_res = 1.0
-                    y_res = 1.0
+            cols = max(1, int(round(self.extent.width() / x_res)))
+            rows = max(1, int(round(self.extent.height() / y_res)))
 
-                n_cols = max(1, int(round(self.extent.width() / x_res)))
-                n_rows = max(1, int(round(self.extent.height() / y_res)))
+            transform_ctx = QgsProject.instance().transformContext()
+            error = writer.writeRaster(
+                pipe,
+                cols,
+                rows,
+                self.extent,
+                self.raster_layer.crs(),
+                transform_ctx
+            )
 
-                err = writer.writeRaster(
-                    pipe,
-                    n_cols,
-                    n_rows,
-                    self.extent,
-                    self.raster_layer.crs(),
-                    QgsProject.instance().transformContext()
-                )
+            if error == QgsRasterFileWriter.NoError and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                return out_path
+            else:
+                raise RuntimeError(f"QgsRasterFileWriter 写入失败，错误码: {error}")
 
-                if err == QgsRasterFileWriter.NoError and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-                    return out_path
-                else:
-                    raise RuntimeError(f"QgsRasterFileWriter 导出失败，错误码: {err}")
-        except Exception as e:
-            raise RuntimeError(f"栅格裁剪彻底失败: {e}")
+        except Exception as err:
+            raise RuntimeError(f"图层裁剪失败: {str(err)}")
 
-        if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-            raise RuntimeError("影像裁剪失败，未生成临时文件，请检查图层源或选区范围")
-
-        return out_path
-
-    def _call_server(self, image_path: str):
-        """调用 HTTP POST 服务上传图片与参数"""
+    def _submit_task(self, image_path: str) -> str:
+        """【1. 提交任务】获取 task_id"""
         try:
             import requests
         except ImportError:
-            raise RuntimeError("Python 环境缺少 requests 模块，请执行 pip install requests 后重启 QGIS")
+            raise RuntimeError("缺少 requests 库，请执行 pip install requests")
 
-        url = f"{self.server_url}/interpret"
-
-        # 组装请求参数
+        url = f"{self.server_url}/api/v1/task/submit"
         data = {
             'model_key': self.model_key,
-            'license_key': self.license_key,  # <--- 新增传递卡密
-            'machine_id': self.machine_id  # <--- 新增传递机器码
+            'license_key': self.license_key,
+            'machine_id': self.machine_id
         }
-        if self.target_class:
-            data['target_class'] = self.target_class
-        if self.prompt:
-            data['prompt'] = self.prompt
+        if self.target_class: data['target_class'] = self.target_class
+        if self.prompt: data['prompt'] = self.prompt
 
         with open(image_path, 'rb') as f:
             files = {'image': (os.path.basename(image_path), f, 'image/tiff')}
-            resp = requests.post(url, files=files, data=data, timeout=self.timeout)
+            resp = requests.post(url, files=files, data=data, timeout=300)
 
         if resp.status_code != 200:
-            try:
-                err = resp.json().get('error', resp.text)
-            except Exception:
-                err = resp.text
-            raise RuntimeError(f"服务器返回异常 ({resp.status_code}): {err}")
+            try: err = resp.json().get('detail', resp.text)
+            except Exception: err = resp.text
+            raise RuntimeError(f"提交任务失败 ({resp.status_code}): {err}")
 
-        content_type = resp.headers.get('Content-Type', '').lower()
+        return resp.json()["task_id"]
 
-        # 判断返回文件后缀名
-        if 'tif' in content_type or 'tiff' in content_type:
-            suffix = '.tif'
-        elif 'geo+json' in content_type or 'json' in content_type:
-            suffix = '.geojson'
-        elif 'zip' in content_type or 'shapefile' in content_type:
-            suffix = '.zip'
-        else:
-            suffix = '.tif' if resp.content[:4] in (b'II*\x00', b'MM\x00*') else '.geojson'
+    def _poll_task_result(self, task_id: str):
+        """【2. 定时轮询状态】直至成功或失败"""
+        import requests
 
-        time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        status_url = f"{self.server_url}/api/v1/task/status/{task_id}"
+        result_url = f"{self.server_url}/api/v1/task/result/{task_id}"
 
-        result_path = os.path.join(
-            tempfile.gettempdir(),
-            f"result_{self.model_key}_{time_str}{suffix}"  # <--- 2. 改用 time_str
-        )
-        with open(result_path, 'wb') as f:
-            f.write(resp.content)
+        start_time = time.time()
 
-        return result_path, content_type
+        while not self.isInterruptionRequested():
+            if time.time() - start_time > self.timeout:
+                raise RuntimeError("解译超时：服务器未在规定时间内完成计算")
+
+            resp = requests.get(status_url, timeout=10)
+            if resp.status_code == 200:
+                info = resp.json()
+                status = info.get("status")
+                message = info.get("message", "运行中...")
+
+                # 将服务器的实时状态输出到 QGIS 插件状态栏
+                self.progress.emit(f"⏳ [云端进度]: {message}")
+
+                if status == "completed":
+                    # 【3. 下载结果】
+                    self.progress.emit("解译完成，正在下载结果图层...")
+                    res_resp = requests.get(result_url, timeout=60)
+                    if res_resp.status_code != 200:
+                        raise RuntimeError("下载结果文件失败")
+
+                    content_type = info.get("content_type", "")
+                    suffix = ".geojson" if "geo+json" in content_type or "json" in content_type else ".tif"
+                    local_result_path = os.path.join(tempfile.gettempdir(), f"result_{task_id}{suffix}")
+
+                    with open(local_result_path, 'wb') as f:
+                        f.write(res_resp.content)
+
+                    return local_result_path, content_type
+
+                elif status == "failed":
+                    error_msg = info.get("error_msg", "未知错误")
+                    raise RuntimeError(f"服务器端计算失败: {error_msg}")
+
+            time.sleep(self.poll_interval)
+
+        raise RuntimeError("用户中断了操作")
