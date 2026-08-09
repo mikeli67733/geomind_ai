@@ -8,9 +8,8 @@ version=2.6
 author=Mike Li
 email=mikeli785857@gmail.com
 
-changelog=2.6版本：任务提交改为QGIS原生任务框架(QgsTask/QgsTaskManager)，新增“取消任务”打断机制；代码拆分为 constants/api_client/raster_clip/interpret_task 多个模块，提升可维护性
-
-2.5版本：新增SAM3大模型支持与卡密授权校验
+changelog=2.6版本：任务提交改为QGIS原生任务框架(QgsTask/QgsTaskManager)，新增"取消任务"打断机制；代码拆分为 constants/api_client/raster_clip/interpret_task 多个模块，提升可维护性
+    2.5版本：新增SAM3大模型支持与卡密授权校验
 
 homepage=https://github.com/mikeli67733/geomind_ai
 repository=https://github.com/mikeli67733/geomind_ai
