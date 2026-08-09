@@ -3,7 +3,7 @@ name=GeoMind AI
 qgisMinimumVersion=3.16
 description=支持SAM3大模型提示词解译及专项地物（水体/耕地/建筑等）自动化提取（需要远程AI服务授权）
 about=本插件结合SAM3通用遥感大模型与专项语义分割模型，支持输入Prompt或选择分类自动提取。注意：本插件需要连接远程云端算法服务器，请扫码或输入授权Key激活使用。
-version=2.1
+version=2.2
 author=Mike Li
 email=mikeli785857@gmail.com
 
