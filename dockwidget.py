@@ -111,7 +111,7 @@ class ImageInterpretDockWidget(QDockWidget):
         qr_label.setAlignment(Qt.AlignCenter)
         qr_layout.addWidget(qr_label)
 
-        tip_label = QLabel("扫码添加作者微信 / 购买授权卡密")
+        tip_label = QLabel("扫码添加作者QQ / 购买授权卡密")
         tip_label.setAlignment(Qt.AlignCenter)
         tip_label.setStyleSheet("color: #555555; font-size: 11px;")
         qr_layout.addWidget(tip_label)
