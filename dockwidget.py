@@ -4,6 +4,8 @@
 - 包含软件授权激活区域 (机器码展示 + 卡密输入 + 微信联系二维码)
 - 土地利用模型：显示要素多选框
 - SAM3 模型：显示 Prompt 提示词输入框
+- 使用 QGIS 原生任务框架 (QgsTask/QgsTaskManager) 提交与管理解译任务，
+  内置「取消任务」打断机制
 兼容 PyQt5 与 PyQt6 (QGIS 3.16 ~ 3.42+)
 """
 
@@ -11,18 +13,26 @@ import os
 from datetime import datetime
 
 from qgis.PyQt.QtCore import Qt, QSettings
-from qgis.PyQt.QtGui import QPixmap  # <--- 用于加载二维码图片
+from qgis.PyQt.QtGui import QPixmap
 from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QComboBox, QPushButton, QTextEdit, QLineEdit, QProgressBar, QMessageBox,
     QGroupBox, QCheckBox, QApplication
 )
-from qgis.core import QgsProject, QgsMapLayerProxyModel, QgsRasterLayer, QgsVectorLayer, QgsRectangle
+from qgis.core import (
+    QgsProject, QgsMapLayerProxyModel, QgsRasterLayer, QgsVectorLayer,
+    QgsRectangle, QgsCoordinateTransform, QgsApplication
+)
 from qgis.gui import QgsMapLayerComboBox
 
 from .extent_tool import ExtentSelectTool
-from .worker import InterpretWorker
+from .interpret_task import InterpretTask
 from .machine_id import get_machine_id
+from .constants import (
+    MODELS, LANDUSE_CLASSES, DEFAULT_CHECKED_CLASS_IDS,
+    DEFAULT_SERVER_URL, SETTINGS_ORG, SETTINGS_APP,
+    SETTINGS_KEY_SERVER_URL, SETTINGS_KEY_LICENSE_KEY,
+)
 
 # PyQt5 / PyQt6 图层过滤器枚举兼容处理
 RASTER_LAYER_FILTER = getattr(QgsMapLayerProxyModel, 'RasterLayer', None)
@@ -34,33 +44,17 @@ if RASTER_LAYER_FILTER is None:
 
 
 class ImageInterpretDockWidget(QDockWidget):
-    # 模型配置：(显示名称, model_key, UI模式)
-    MODELS = [
-        ("土地利用/多要素识别 (LANDUSE)", "LANDUSE", "landuse"),
-        ("SAM3 提示词通用大模型 (SAM3)", "SAM3_MODEL", "sam3"),
-    ]
-
-    # 第一个模型对应的类别映射
-    LANDUSE_CLASSES = [
-        ("耕地 ", 1),
-        ("林地 ", 3),
-        ("草地 ", 4),
-        ("建筑 ", 5),
-        ("道路 ", 6),
-        ("施工 ", 7),
-        ("水体 ", 10),
-    ]
 
     def __init__(self, iface, parent=None):
         super().__init__("遥感影像智能解译", parent)
         self.iface = iface
         self.plugin_dir = os.path.dirname(__file__)
         self.canvas = iface.mapCanvas()
-        self.settings = QSettings("ImageInterpretPlugin", "ImageInterpretPlugin")
+        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
 
         self.extent_tool = None
         self.selected_extent = None
-        self.worker = None
+        self.task = None  # 当前正在运行的 InterpretTask (QgsTask)
 
         self._build_ui()
         self._load_settings()
@@ -75,7 +69,6 @@ class ImageInterpretDockWidget(QDockWidget):
         auth_group = QGroupBox("软件授权激活")
         auth_layout = QVBoxLayout()
 
-        # 机器码展示行
         mac_layout = QHBoxLayout()
         mac_layout.addWidget(QLabel("我的机器码:"))
         self.machine_id = get_machine_id()
@@ -88,7 +81,6 @@ class ImageInterpretDockWidget(QDockWidget):
         mac_layout.addWidget(self.copy_mac_btn)
         auth_layout.addLayout(mac_layout)
 
-        # 卡密输入行
         key_layout = QHBoxLayout()
         key_layout.addWidget(QLabel("授权卡密 Key:"))
         self.license_key_edit = QLineEdit()
@@ -96,7 +88,6 @@ class ImageInterpretDockWidget(QDockWidget):
         key_layout.addWidget(self.license_key_edit)
         auth_layout.addLayout(key_layout)
 
-        # 二维码展示行（自动读取插件目录下的 qr_code.png）
         qr_layout = QVBoxLayout()
         qr_label = QLabel()
         qr_path = os.path.join(self.plugin_dir, "qr_code.png")
@@ -125,7 +116,7 @@ class ImageInterpretDockWidget(QDockWidget):
         server_layout = QHBoxLayout()
         server_layout.addWidget(QLabel("服务地址:"))
         self.server_url_edit = QLineEdit()
-        self.server_url_edit.setPlaceholderText("https://application-showed-revolutionary-flooring.trycloudflare.com")
+        self.server_url_edit.setPlaceholderText(DEFAULT_SERVER_URL)
         server_layout.addWidget(self.server_url_edit)
         server_group.setLayout(server_layout)
         main_layout.addWidget(server_group)
@@ -143,7 +134,7 @@ class ImageInterpretDockWidget(QDockWidget):
         model_group = QGroupBox("2. 选择解译模型/任务")
         model_layout = QVBoxLayout()
         self.model_combo = QComboBox()
-        for label, model_key, mode in self.MODELS:
+        for label, model_key, mode in MODELS:
             self.model_combo.addItem(label, userData={"key": model_key, "mode": mode})
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         model_layout.addWidget(self.model_combo)
@@ -154,9 +145,9 @@ class ImageInterpretDockWidget(QDockWidget):
         self.class_group = QGroupBox("3. 选择要解译的要素类别 (可多选)")
         class_grid = QGridLayout()
         self.class_checkboxes = {}
-        for idx, (label, cls_id) in enumerate(self.LANDUSE_CLASSES):
+        for idx, (label, cls_id) in enumerate(LANDUSE_CLASSES):
             cb = QCheckBox(label)
-            if cls_id == 10:  # 默认勾选水体
+            if cls_id in DEFAULT_CHECKED_CLASS_IDS:
                 cb.setChecked(True)
             self.class_checkboxes[cls_id] = cb
             class_grid.addWidget(cb, idx // 3, idx % 3)
@@ -193,13 +184,22 @@ class ImageInterpretDockWidget(QDockWidget):
         extent_group.setLayout(extent_layout)
         main_layout.addWidget(extent_group)
 
-        # 6. 执行解译
+        # 6. 执行解译（含取消按钮，构成完整的“打断机制”）
         run_group = QGroupBox("5. 执行任务")
         run_layout = QVBoxLayout()
+
+        run_btn_row = QHBoxLayout()
         self.run_btn = QPushButton("开始智能解译")
         self.run_btn.setStyleSheet("font-weight: bold; padding: 6px;")
         self.run_btn.clicked.connect(self._run_interpret)
-        run_layout.addWidget(self.run_btn)
+        run_btn_row.addWidget(self.run_btn)
+
+        self.cancel_btn = QPushButton("取消任务")
+        self.cancel_btn.setStyleSheet("padding: 6px;")
+        self.cancel_btn.clicked.connect(self._cancel_interpret)
+        self.cancel_btn.setEnabled(False)
+        run_btn_row.addWidget(self.cancel_btn)
+        run_layout.addLayout(run_btn_row)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
@@ -238,14 +238,14 @@ class ImageInterpretDockWidget(QDockWidget):
             self.prompt_group.setVisible(False)
 
     def _load_settings(self):
-        url = self.settings.value("server_url", "http://127.0.0.1:8000")
-        key = self.settings.value("license_key", "")
+        url = self.settings.value(SETTINGS_KEY_SERVER_URL, DEFAULT_SERVER_URL)
+        key = self.settings.value(SETTINGS_KEY_LICENSE_KEY, "")
         self.server_url_edit.setText(url)
         self.license_key_edit.setText(key)
 
     def _save_settings(self):
-        self.settings.setValue("server_url", self.server_url_edit.text().strip())
-        self.settings.setValue("license_key", self.license_key_edit.text().strip())
+        self.settings.setValue(SETTINGS_KEY_SERVER_URL, self.server_url_edit.text().strip())
+        self.settings.setValue(SETTINGS_KEY_LICENSE_KEY, self.license_key_edit.text().strip())
 
     # ------------------------------------------------------------- 范围选择 ---
     def _activate_extent_tool(self):
@@ -270,6 +270,10 @@ class ImageInterpretDockWidget(QDockWidget):
 
     # --------------------------------------------------------------- 运行 ----
     def _run_interpret(self):
+        if self.task is not None:
+            QMessageBox.information(self, "提示", "已有任务正在运行，请先取消或等待其完成")
+            return
+
         server_url = self.server_url_edit.text().strip()
         if not server_url:
             QMessageBox.warning(self, "提示", "请填写服务器地址")
@@ -312,11 +316,10 @@ class ImageInterpretDockWidget(QDockWidget):
 
         extent_in_layer_crs = self._transform_extent_to_layer_crs(self.selected_extent, layer)
 
-        self.run_btn.setEnabled(False)
-        self.progress_bar.setVisible(True)
+        self._set_running_state(True)
         self.status_label.setText("正在后台处理，请稍候...")
 
-        self.worker = InterpretWorker(
+        task = InterpretTask(
             raster_layer=layer,
             extent=extent_in_layer_crs,
             model_key=model_key,
@@ -324,19 +327,35 @@ class ImageInterpretDockWidget(QDockWidget):
             prompt=prompt,
             server_url=server_url,
             license_key=license_key,
-            machine_id=self.machine_id
+            machine_id=self.machine_id,
         )
-        self.worker.progress.connect(self._on_progress)
-        self.worker.finished_ok.connect(self._on_finished_ok)
-        self.worker.finished_error.connect(self._on_finished_error)
-        self.worker.start()
+        task.progressMessage.connect(self._on_progress)
+        task.taskSucceeded.connect(self._on_finished_ok)
+        task.taskFailed.connect(self._on_finished_error)
+        task.taskCancelled.connect(self._on_cancelled)
+
+        self.task = task
+        # 使用 QGIS 原生任务管理器提交任务：会自动出现在状态栏后台任务面板，
+        # 并天然带有取消按钮（与本面板的“取消任务”按钮效果一致）
+        QgsApplication.taskManager().addTask(task)
+
+    def _cancel_interpret(self):
+        if self.task is None:
+            return
+        self.cancel_btn.setEnabled(False)
+        self.status_label.setText("正在取消任务，请稍候...")
+        self.task.cancel()
+
+    def _set_running_state(self, running: bool):
+        self.run_btn.setEnabled(not running)
+        self.cancel_btn.setEnabled(running)
+        self.progress_bar.setVisible(running)
 
     def _transform_extent_to_layer_crs(self, rect, layer):
         canvas_crs = self.canvas.mapSettings().destinationCrs()
         layer_crs = layer.crs()
         if canvas_crs == layer_crs:
             return rect
-        from qgis.core import QgsCoordinateTransform
         transform = QgsCoordinateTransform(canvas_crs, layer_crs, QgsProject.instance())
         return transform.transformBoundingBox(rect)
 
@@ -344,8 +363,8 @@ class ImageInterpretDockWidget(QDockWidget):
         self.status_label.setText(text)
 
     def _on_finished_ok(self, result_path, content_type):
-        self.run_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
+        self._set_running_state(False)
+        self.task = None
 
         time_display = datetime.now().strftime("%H:%M:%S")
         model_label = self.model_combo.currentText().split(' ')[0]
@@ -365,7 +384,22 @@ class ImageInterpretDockWidget(QDockWidget):
         self.status_label.setText(f"完成！已加载图层: {layer_name}")
 
     def _on_finished_error(self, error_msg):
-        self.run_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
+        self._set_running_state(False)
+        self.task = None
         self.status_label.setText("解译失败")
         QMessageBox.critical(self, "解译失败", error_msg)
+
+    def _on_cancelled(self):
+        self._set_running_state(False)
+        self.task = None
+        self.status_label.setText("任务已取消")
+
+    # --------------------------------------------------------- 生命周期清理 ---
+    def cancel_running_task(self):
+        """供插件卸载 / 面板关闭时调用，确保不会留下悬空的后台任务。"""
+        if self.task is not None:
+            self.task.cancel()
+
+    def closeEvent(self, event):
+        self.cancel_running_task()
+        super().closeEvent(event)

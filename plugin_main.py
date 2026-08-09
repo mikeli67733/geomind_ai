@@ -41,6 +41,7 @@ class ImageInterpretPlugin:
             self.iface.removeToolBarIcon(self.action)
             self.action = None
         if self.dockwidget:
+            self.dockwidget.cancel_running_task()
             self.iface.removeDockWidget(self.dockwidget)
             self.dockwidget.deleteLater()
             self.dockwidget = None

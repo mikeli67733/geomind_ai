@@ -4,11 +4,13 @@ plugin_id=geomind_ai
 qgisMinimumVersion=3.16
 description=支持SAM3大模型提示词解译及专项地物（水体/耕地/建筑等）自动化提取（需要远程AI服务授权）
 about=本插件结合SAM3通用遥感大模型与专项语义分割模型，支持输入Prompt或选择分类自动提取。注意：本插件需要连接远程云端算法服务器，请扫码或输入授权Key激活使用。
-version=2.5
+version=2.6
 author=Mike Li
 email=mikeli785857@gmail.com
 
-changelog=2.5版本：新增SAM3大模型支持与卡密授权校验
+changelog=2.6版本：任务提交改为QGIS原生任务框架(QgsTask/QgsTaskManager)，新增“取消任务”打断机制；代码拆分为 constants/api_client/raster_clip/interpret_task 多个模块，提升可维护性
+
+2.5版本：新增SAM3大模型支持与卡密授权校验
 
 homepage=https://github.com/mikeli67733/geomind_ai
 repository=https://github.com/mikeli67733/geomind_ai
