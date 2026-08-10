@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 解译插件停靠面板：
-- 包含软件授权激活区域 (机器码展示 + 卡密输入 + 微信联系二维码)
+- 账号区域：用户名密码登录/注册、当前套餐与今日剩余次数展示、升级套餐入口
 - 土地利用模型：显示要素多选框
 - SAM3 模型：显示 Prompt 提示词输入框
 - 使用 QGIS 原生任务框架 (QgsTask/QgsTaskManager) 提交与管理解译任务，
@@ -28,10 +28,15 @@ from qgis.gui import QgsMapLayerComboBox
 from .extent_tool import ExtentSelectTool
 from .interpret_task import InterpretTask
 from .machine_id import get_machine_id
+from .auth_client import GeoMindAuthClient, AuthApiError
+from .login_dialog import LoginDialog
+from .plan_dialog import PlanDialog
 from .constants import (
     MODELS, LANDUSE_CLASSES, DEFAULT_CHECKED_CLASS_IDS,
     DEFAULT_SERVER_URL, SETTINGS_ORG, SETTINGS_APP,
     SETTINGS_KEY_SERVER_URL, SETTINGS_KEY_LICENSE_KEY,
+    SETTINGS_KEY_TOKEN, SETTINGS_KEY_USERNAME, PLAN_LABELS,
+    FREE_PLAN_DAILY_QUOTA,
 )
 
 # PyQt5 / PyQt6 图层过滤器枚举兼容处理
@@ -56,60 +61,53 @@ class ImageInterpretDockWidget(QDockWidget):
         self.selected_extent = None
         self.task = None  # 当前正在运行的 InterpretTask (QgsTask)
 
+        self.token = ""
+        self.username = ""
+        self.account_info = {}
+
         self._build_ui()
         self._load_settings()
         self._on_model_changed()  # 初始化 UI 显隐状态
+        self._try_restore_login()
 
     # ---------------------------------------------------------------- UI ----
     def _build_ui(self):
         container = QWidget()
         main_layout = QVBoxLayout()
 
-        # 0. 软件授权配置 (机器码 + 卡密 + 微信二维码)
-        auth_group = QGroupBox("软件授权激活")
-        auth_layout = QVBoxLayout()
+        # 0. 账号登录 + 套餐状态
+        self.machine_id = get_machine_id()  # 仍保留机器码，仅作统计/兼容用途
 
-        mac_layout = QHBoxLayout()
-        mac_layout.addWidget(QLabel("我的机器码:"))
-        self.machine_id = get_machine_id()
-        self.mac_edit = QLineEdit(self.machine_id)
-        self.mac_edit.setReadOnly(True)
-        mac_layout.addWidget(self.mac_edit)
+        account_group = QGroupBox("账号与套餐")
+        account_layout = QVBoxLayout()
 
-        self.copy_mac_btn = QPushButton("复制")
-        self.copy_mac_btn.clicked.connect(self._copy_machine_id)
-        mac_layout.addWidget(self.copy_mac_btn)
-        auth_layout.addLayout(mac_layout)
+        self.account_status_label = QLabel("尚未登录")
+        self.account_status_label.setWordWrap(True)
+        self.account_status_label.setStyleSheet("color: #888888;")
+        account_layout.addWidget(self.account_status_label)
 
-        key_layout = QHBoxLayout()
-        key_layout.addWidget(QLabel("授权卡密 Key:"))
-        self.license_key_edit = QLineEdit()
-        self.license_key_edit.setPlaceholderText("请输入购买的卡密 (如: KEY-30D-XXXX)")
-        key_layout.addWidget(self.license_key_edit)
-        auth_layout.addLayout(key_layout)
+        self.quota_label = QLabel("")
+        self.quota_label.setWordWrap(True)
+        self.quota_label.setStyleSheet("color: #333333;")
+        account_layout.addWidget(self.quota_label)
 
-        qr_layout = QVBoxLayout()
-        qr_label = QLabel()
-        qr_path = os.path.join(self.plugin_dir, "qr_code.png")
+        account_btn_row = QHBoxLayout()
+        self.login_btn = QPushButton("登录 / 注册")
+        self.login_btn.clicked.connect(self._open_login_dialog)
+        account_btn_row.addWidget(self.login_btn)
 
-        if os.path.exists(qr_path):
-            pixmap = QPixmap(qr_path).scaled(130, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            qr_label.setPixmap(pixmap)
-        else:
-            qr_label.setText("[扫码购买卡密]\n(请将二维码保存为 qr_code.png 放入插件目录)")
-            qr_label.setStyleSheet("color: #888888; border: 1px dashed #CCCCCC; padding: 10px;")
+        self.logout_btn = QPushButton("退出登录")
+        self.logout_btn.clicked.connect(self._logout)
+        self.logout_btn.setVisible(False)
+        account_btn_row.addWidget(self.logout_btn)
 
-        qr_label.setAlignment(Qt.AlignCenter)
-        qr_layout.addWidget(qr_label)
+        self.upgrade_btn = QPushButton("套餐与升级")
+        self.upgrade_btn.clicked.connect(self._open_plan_dialog)
+        account_btn_row.addWidget(self.upgrade_btn)
+        account_layout.addLayout(account_btn_row)
 
-        tip_label = QLabel("扫码添加作者QQ / 购买授权卡密")
-        tip_label.setAlignment(Qt.AlignCenter)
-        tip_label.setStyleSheet("color: #555555; font-size: 11px;")
-        qr_layout.addWidget(tip_label)
-
-        auth_layout.addLayout(qr_layout)
-        auth_group.setLayout(auth_layout)
-        main_layout.addWidget(auth_group)
+        account_group.setLayout(account_layout)
+        main_layout.addWidget(account_group)
 
         # 服务器配置
         server_group = QGroupBox("服务器配置")
@@ -218,10 +216,6 @@ class ImageInterpretDockWidget(QDockWidget):
         self.setWidget(container)
 
     # -------------------------------------------------------- UI 交互逻辑 ----
-    def _copy_machine_id(self):
-        QApplication.clipboard().setText(self.machine_id)
-        QMessageBox.information(self, "提示", "机器码已复制到剪贴板！")
-
     def _on_model_changed(self):
         """模型切换时，动态切换显示『多选复选框』或『Prompt输入框』"""
         data = self.model_combo.currentData()
@@ -239,13 +233,110 @@ class ImageInterpretDockWidget(QDockWidget):
 
     def _load_settings(self):
         url = self.settings.value(SETTINGS_KEY_SERVER_URL, DEFAULT_SERVER_URL)
-        key = self.settings.value(SETTINGS_KEY_LICENSE_KEY, "")
         self.server_url_edit.setText(url)
-        self.license_key_edit.setText(key)
 
     def _save_settings(self):
         self.settings.setValue(SETTINGS_KEY_SERVER_URL, self.server_url_edit.text().strip())
-        self.settings.setValue(SETTINGS_KEY_LICENSE_KEY, self.license_key_edit.text().strip())
+
+    # ------------------------------------------------------------- 账号登录 ---
+    def _current_server_url(self) -> str:
+        return self.server_url_edit.text().strip() or DEFAULT_SERVER_URL
+
+    def _try_restore_login(self):
+        """插件面板打开时，如果之前登录过、token 还没过期，就自动恢复登录状态。"""
+        token = self.settings.value(SETTINGS_KEY_TOKEN, "")
+        username = self.settings.value(SETTINGS_KEY_USERNAME, "")
+        if not token or not username:
+            self._update_account_ui()
+            return
+
+        self.token = token
+        self.username = username
+        self._refresh_account_info(silent=True)
+
+    def _open_login_dialog(self):
+        dialog = LoginDialog(self._current_server_url, self)
+        dialog.loggedIn.connect(self._on_logged_in)
+        dialog.exec_()
+
+    def _on_logged_in(self, username: str, token: str):
+        self.username = username
+        self.token = token
+        self.settings.setValue(SETTINGS_KEY_TOKEN, token)
+        self.settings.setValue(SETTINGS_KEY_USERNAME, username)
+        self._refresh_account_info()
+
+    def _logout(self):
+        self.token = ""
+        self.username = ""
+        self.account_info = {}
+        self.settings.remove(SETTINGS_KEY_TOKEN)
+        self.settings.remove(SETTINGS_KEY_USERNAME)
+        self._update_account_ui()
+
+    def _refresh_account_info(self, silent: bool = False):
+        """向服务端拉取最新的套餐/额度信息并刷新面板文案。"""
+        if not self.token:
+            self._update_account_ui()
+            return
+
+        client = GeoMindAuthClient(self._current_server_url(), self.token)
+        try:
+            self.account_info = client.get_me()
+        except AuthApiError as e:
+            # token 过期或服务器不可达：清空本地登录态，提示重新登录
+            self.token = ""
+            self.username = ""
+            self.account_info = {}
+            self.settings.remove(SETTINGS_KEY_TOKEN)
+            self.settings.remove(SETTINGS_KEY_USERNAME)
+            self._update_account_ui()
+            if not silent:
+                QMessageBox.warning(self, "提示", f"获取账号信息失败: {e}")
+            return
+
+        self._update_account_ui()
+
+    def _update_account_ui(self):
+        if not self.token:
+            self.account_status_label.setText("尚未登录，请先登录 / 注册后使用解译功能")
+            self.account_status_label.setStyleSheet("color: #888888;")
+            self.quota_label.setText("")
+            self.login_btn.setVisible(True)
+            self.logout_btn.setVisible(False)
+            return
+
+        self.login_btn.setVisible(False)
+        self.logout_btn.setVisible(True)
+
+        plan = self.account_info.get("plan", "free")
+        plan_label = PLAN_LABELS.get(plan, plan)
+        self.account_status_label.setText(f"已登录: {self.username}  |  当前套餐: {plan_label}")
+        self.account_status_label.setStyleSheet("color: #2e7d32;")
+
+        if plan == "free":
+            used = self.account_info.get("quota_used_today", 0)
+            limit = self.account_info.get("quota_limit_today") or FREE_PLAN_DAILY_QUOTA
+            self.quota_label.setText(f"今日剩余免费次数: {max(limit - used, 0)} / {limit}")
+        elif plan == "pro":
+            expire = self.account_info.get("pro_expire_at", "未知")
+            self.quota_label.setText(f"包月会员生效中，到期时间: {expire}")
+        elif plan == "custom":
+            self.quota_label.setText("定制版/私有化部署，不限次数")
+        else:
+            self.quota_label.setText("")
+
+    def _open_plan_dialog(self):
+        if not self.token:
+            QMessageBox.information(self, "提示", "请先登录后再查看套餐与升级")
+            self._open_login_dialog()
+            return
+
+        dialog = PlanDialog(self._current_server_url(), self.token, self.account_info,
+                             self.plugin_dir, self)
+        dialog.exec_()
+        if dialog.account_refreshed:
+            self._refresh_account_info(silent=True)
 
     # ------------------------------------------------------------- 范围选择 ---
     def _activate_extent_tool(self):
@@ -279,9 +370,9 @@ class ImageInterpretDockWidget(QDockWidget):
             QMessageBox.warning(self, "提示", "请填写服务器地址")
             return
 
-        license_key = self.license_key_edit.text().strip()
-        if not license_key:
-            QMessageBox.warning(self, "提示", "请输入授权卡密 Key")
+        if not self.token:
+            QMessageBox.warning(self, "提示", "请先登录账号后再执行解译")
+            self._open_login_dialog()
             return
 
         layer = self.layer_combo.currentLayer()
@@ -326,8 +417,9 @@ class ImageInterpretDockWidget(QDockWidget):
             target_class=target_class,
             prompt=prompt,
             server_url=server_url,
-            license_key=license_key,
+            license_key="",
             machine_id=self.machine_id,
+            token=self.token,
         )
         task.progressMessage.connect(self._on_progress)
         task.taskSucceeded.connect(self._on_finished_ok)
@@ -382,12 +474,17 @@ class ImageInterpretDockWidget(QDockWidget):
 
         QgsProject.instance().addMapLayer(new_layer)
         self.status_label.setText(f"完成！已加载图层: {layer_name}")
+        self._refresh_account_info(silent=True)  # 刷新今日剩余免费次数
 
     def _on_finished_error(self, error_msg):
         self._set_running_state(False)
         self.task = None
         self.status_label.setText("解译失败")
         QMessageBox.critical(self, "解译失败", error_msg)
+        if "登录已过期" in error_msg:
+            self._logout()
+        elif "免费次数已用完" in error_msg or "402" in error_msg:
+            self._open_plan_dialog()
 
     def _on_cancelled(self):
         self._set_running_state(False)

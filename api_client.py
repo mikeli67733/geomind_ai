@@ -25,7 +25,8 @@ class TaskCancelledError(Exception):
 class GeoMindApiClient:
 
     def __init__(self, server_url: str, license_key: str, machine_id: str,
-                 submit_timeout: int = 300, request_timeout: int = 30):
+                 submit_timeout: int = 300, request_timeout: int = 30,
+                 token: str = ""):
         try:
             import requests
         except ImportError as exc:
@@ -38,6 +39,14 @@ class GeoMindApiClient:
         self.machine_id = machine_id
         self.submit_timeout = submit_timeout
         self.request_timeout = request_timeout
+        # 登录后拿到的 JWT。账号网关校验的是这个 token，license_key/machine_id
+        # 只作为兼容字段随请求带过去（网关会用用户名覆盖 machine_id 做统计）。
+        self.token = token
+
+    def _auth_headers(self) -> dict:
+        if self.token:
+            return {"Authorization": f"Bearer {self.token}"}
+        return {}
 
     def close(self):
         try:
@@ -63,8 +72,14 @@ class GeoMindApiClient:
 
         with open(image_path, 'rb') as f:
             files = {'image': (os.path.basename(image_path), f, 'image/tiff')}
-            resp = self._session.post(url, files=files, data=data, timeout=self.submit_timeout)
+            resp = self._session.post(url, files=files, data=data, timeout=self.submit_timeout,
+                                       headers=self._auth_headers())
 
+        if resp.status_code == 402:
+            # 账号网关：今日免费次数已用完
+            raise RuntimeError(self._extract_error(resp))
+        if resp.status_code == 401:
+            raise RuntimeError("登录已过期，请重新登录后再试")
         if resp.status_code != 200:
             raise RuntimeError(f"提交任务失败 ({resp.status_code}): {self._extract_error(resp)}")
 
@@ -74,7 +89,7 @@ class GeoMindApiClient:
     def get_status(self, task_id: str) -> dict:
         from .constants import API_STATUS
         url = f"{self.server_url}{API_STATUS.format(task_id=task_id)}"
-        resp = self._session.get(url, timeout=self.request_timeout)
+        resp = self._session.get(url, timeout=self.request_timeout, headers=self._auth_headers())
         if resp.status_code != 200:
             raise RuntimeError(f"查询任务状态失败 ({resp.status_code}): {self._extract_error(resp)}")
         return resp.json()
@@ -83,7 +98,7 @@ class GeoMindApiClient:
     def download_result(self, task_id: str, dest_path: str) -> None:
         from .constants import API_RESULT
         url = f"{self.server_url}{API_RESULT.format(task_id=task_id)}"
-        resp = self._session.get(url, timeout=60)
+        resp = self._session.get(url, timeout=60, headers=self._auth_headers())
         if resp.status_code != 200:
             raise RuntimeError(f"下载结果文件失败 ({resp.status_code}): {self._extract_error(resp)}")
         with open(dest_path, 'wb') as f:
@@ -99,7 +114,7 @@ class GeoMindApiClient:
         from .constants import API_CANCEL
         try:
             url = f"{self.server_url}{API_CANCEL.format(task_id=task_id)}"
-            self._session.post(url, timeout=5)
+            self._session.post(url, timeout=5, headers=self._auth_headers())
         except Exception:
             pass
 

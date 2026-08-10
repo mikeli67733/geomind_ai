@@ -58,6 +58,7 @@ class InterpretTask(QgsTask):
     def __init__(self, raster_layer, extent: QgsRectangle, model_key: str,
                  target_class: str, prompt: str, server_url: str,
                  license_key: str = "TEST_KEY", machine_id: str = "MACHINE_01",
+                 token: str = "",
                  poll_interval: float = DEFAULT_POLL_INTERVAL,
                  timeout: int = DEFAULT_TIMEOUT):
         super().__init__(PLUGIN_TASK_DESCRIPTION, TASK_CAN_CANCEL)
@@ -70,6 +71,7 @@ class InterpretTask(QgsTask):
         self.server_url = server_url.rstrip('/')
         self.license_key = license_key
         self.machine_id = machine_id
+        self.token = token
         self.poll_interval = poll_interval
         self.timeout = timeout
 
@@ -90,7 +92,9 @@ class InterpretTask(QgsTask):
         """
         clipped_path = None
         try:
-            self._client = GeoMindApiClient(self.server_url, self.license_key, self.machine_id)
+            self._client = GeoMindApiClient(
+                self.server_url, self.license_key, self.machine_id, token=self.token
+            )
 
             self._raise_if_cancelled()
             self.progressMessage.emit("正在裁剪所选范围的影像...")
