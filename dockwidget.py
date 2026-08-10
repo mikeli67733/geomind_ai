@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 解译插件停靠面板：
+- 顶部标题栏：包含独立右上角 ⚙️ 设置按钮（展开/收起服务器配置）
 - 账号区域：用户名密码登录/注册、当前套餐与今日剩余次数展示、升级套餐入口
 - 土地利用模型：显示要素多选框
 - SAM3 模型：显示 Prompt 提示词输入框
@@ -17,7 +18,7 @@ from qgis.PyQt.QtGui import QPixmap
 from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QComboBox, QPushButton, QTextEdit, QLineEdit, QProgressBar, QMessageBox,
-    QGroupBox, QCheckBox, QApplication
+    QGroupBox, QCheckBox, QApplication, QToolButton, QFrame
 )
 from qgis.core import (
     QgsProject, QgsMapLayerProxyModel, QgsRasterLayer, QgsVectorLayer,
@@ -73,22 +74,154 @@ class ImageInterpretDockWidget(QDockWidget):
     # ---------------------------------------------------------------- UI ----
     def _build_ui(self):
         container = QWidget()
+        container.setObjectName("dockContainer")
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
 
-        # 0. 账号登录 + 套餐状态
-        self.machine_id = get_machine_id()  # 仍保留机器码，仅作统计/兼容用途
+        # 注入现代卡片式 QSS 样式表
+        container.setStyleSheet("""
+            QWidget#dockContainer {
+                background-color: #f8fafc;
+            }
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                margin-top: 8px;
+                padding-top: 14px;
+                background-color: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 10px;
+                padding: 0 6px;
+                color: #334155;
+            }
+            QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: #334155;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #f1f5f9;
+                border-color: #94a3b8;
+            }
+            QPushButton#runBtn {
+                background-color: #2563eb;
+                color: #ffffff;
+                border: none;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton#runBtn:hover {
+                background-color: #1d4ed8;
+            }
+            QPushButton#runBtn:disabled {
+                background-color: #cbd5e1;
+                color: #94a3b8;
+            }
+            QPushButton#cancelBtn {
+                background-color: #fef2f2;
+                color: #dc2626;
+                border: 1px solid #fca5a5;
+            }
+            QPushButton#cancelBtn:hover {
+                background-color: #fee2e2;
+            }
+            QPushButton#cancelBtn:disabled {
+                background-color: #f8fafc;
+                color: #cbd5e1;
+                border-color: #e2e8f0;
+            }
+            QToolButton#settingsBtn {
+                border: none;
+                background: transparent;
+                font-size: 15px;
+                padding: 4px;
+                border-radius: 4px;
+            }
+            QToolButton#settingsBtn:hover {
+                background-color: #e2e8f0;
+            }
+            QLineEdit, QComboBox, QTextEdit {
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 5px;
+                background-color: #ffffff;
+                color: #1e293b;
+            }
+            QLineEdit:focus, QComboBox:focus, QTextEdit:focus {
+                border-color: #2563eb;
+            }
+            QProgressBar {
+                border: none;
+                background-color: #e2e8f0;
+                border-radius: 4px;
+                height: 8px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #2563eb;
+                border-radius: 4px;
+            }
+            QLabel#extentLabel {
+                background-color: #f1f5f9;
+                border: 1px solid #e2e8f0;
+                border-radius: 6px;
+                padding: 6px;
+                font-family: monospace;
+                font-size: 11px;
+                color: #475569;
+            }
+        """)
 
+        self.machine_id = get_machine_id()
+
+        # ---------------- 顶部标题栏 + 独立⚙️设置按钮 ----------------
+        header_layout = QHBoxLayout()
+        header_title = QLabel("AI 遥感智能解译")
+        header_title.setStyleSheet("font-size: 15px; font-weight: bold; color: #0f172a;")
+        header_layout.addWidget(header_title)
+        header_layout.addStretch()
+
+        self.settings_btn = QToolButton()
+        self.settings_btn.setObjectName("settingsBtn")
+        self.settings_btn.setText("⚙️")
+        self.settings_btn.setToolTip("服务器网络配置")
+        self.settings_btn.clicked.connect(self._toggle_server_settings)
+        header_layout.addWidget(self.settings_btn)
+
+        main_layout.addLayout(header_layout)
+
+        # ---------------- 服务器配置（默认隐藏） ----------------
+        self.server_group = QGroupBox("服务器配置")
+        server_layout = QHBoxLayout()
+        server_layout.addWidget(QLabel("服务地址:"))
+        self.server_url_edit = QLineEdit()
+        self.server_url_edit.setPlaceholderText(DEFAULT_SERVER_URL)
+        server_layout.addWidget(self.server_url_edit)
+        self.server_group.setLayout(server_layout)
+        self.server_group.setVisible(False)  # 点击顶部 ⚙️ 展开/收起
+        main_layout.addWidget(self.server_group)
+
+        # ---------------- 0. 账号与套餐 ----------------
         account_group = QGroupBox("账号与套餐")
         account_layout = QVBoxLayout()
 
         self.account_status_label = QLabel("尚未登录")
         self.account_status_label.setWordWrap(True)
-        self.account_status_label.setStyleSheet("color: #888888;")
+        self.account_status_label.setStyleSheet("color: #64748b;")
         account_layout.addWidget(self.account_status_label)
 
         self.quota_label = QLabel("")
         self.quota_label.setWordWrap(True)
-        self.quota_label.setStyleSheet("color: #333333;")
+        self.quota_label.setStyleSheet("color: #334155;")
         account_layout.addWidget(self.quota_label)
 
         account_btn_row = QHBoxLayout()
@@ -104,22 +237,12 @@ class ImageInterpretDockWidget(QDockWidget):
         self.upgrade_btn = QPushButton("套餐与升级")
         self.upgrade_btn.clicked.connect(self._open_plan_dialog)
         account_btn_row.addWidget(self.upgrade_btn)
-        account_layout.addLayout(account_btn_row)
 
+        account_layout.addLayout(account_btn_row)
         account_group.setLayout(account_layout)
         main_layout.addWidget(account_group)
 
-        # 服务器配置
-        server_group = QGroupBox("服务器配置")
-        server_layout = QHBoxLayout()
-        server_layout.addWidget(QLabel("服务地址:"))
-        self.server_url_edit = QLineEdit()
-        self.server_url_edit.setPlaceholderText(DEFAULT_SERVER_URL)
-        server_layout.addWidget(self.server_url_edit)
-        server_group.setLayout(server_layout)
-        main_layout.addWidget(server_group)
-
-        # 1. 影像图层选择
+        # ---------------- 1. 影像图层选择 ----------------
         layer_group = QGroupBox("1. 选择栅格图层")
         layer_layout = QVBoxLayout()
         self.layer_combo = QgsMapLayerComboBox()
@@ -128,8 +251,8 @@ class ImageInterpretDockWidget(QDockWidget):
         layer_group.setLayout(layer_layout)
         main_layout.addWidget(layer_group)
 
-        # 2. 选择解译模型
-        model_group = QGroupBox("2. 选择解译模型/任务")
+        # ---------------- 2. 选择解译模型 ----------------
+        model_group = QGroupBox("2. 选择解译模型")
         model_layout = QVBoxLayout()
         self.model_combo = QComboBox()
         for label, model_key, mode in MODELS:
@@ -139,8 +262,8 @@ class ImageInterpretDockWidget(QDockWidget):
         model_group.setLayout(model_layout)
         main_layout.addWidget(model_group)
 
-        # 3. 动态配置区域：土地利用分类多选框 (仅 LANDUSE 模型显示)
-        self.class_group = QGroupBox("3. 选择要解译的要素类别 (可多选)")
+        # ---------------- 3. 模型参数 (要素类别多选框) ----------------
+        self.class_group = QGroupBox("3. 选择要解译的要素类别")
         class_grid = QGridLayout()
         self.class_checkboxes = {}
         for idx, (label, cls_id) in enumerate(LANDUSE_CLASSES):
@@ -152,51 +275,52 @@ class ImageInterpretDockWidget(QDockWidget):
         self.class_group.setLayout(class_grid)
         main_layout.addWidget(self.class_group)
 
-        # 4. 动态配置区域：SAM3 提示词输入框 (仅 SAM3 模型显示)
+        # ---------------- 3. 模型参数 (SAM3 Prompt) ----------------
         self.prompt_group = QGroupBox("3. 输入 SAM 提示词 (Prompt)")
         prompt_layout = QVBoxLayout()
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setPlaceholderText("例如: water, floodwater (支持英文单词描述)")
-        self.prompt_edit.setFixedHeight(70)
+        self.prompt_edit.setFixedHeight(65)
         prompt_layout.addWidget(self.prompt_edit)
         self.prompt_group.setLayout(prompt_layout)
         main_layout.addWidget(self.prompt_group)
 
-        # 5. 框选范围
+        # ---------------- 4. 框选范围 ----------------
         extent_group = QGroupBox("4. 框选解译范围")
         extent_layout = QVBoxLayout()
+
         btn_row = QHBoxLayout()
-        self.select_extent_btn = QPushButton("地图拖拽框选")
+        self.select_extent_btn = QPushButton("🎯 地图拖拽框选")
         self.select_extent_btn.clicked.connect(self._activate_extent_tool)
         btn_row.addWidget(self.select_extent_btn)
 
-        self.use_canvas_extent_btn = QPushButton("当前视图范围")
+        self.use_canvas_extent_btn = QPushButton("🖼️ 当前视图范围")
         self.use_canvas_extent_btn.clicked.connect(self._use_canvas_extent)
         btn_row.addWidget(self.use_canvas_extent_btn)
         extent_layout.addLayout(btn_row)
 
         self.extent_label = QLabel("尚未选择解译范围")
+        self.extent_label.setObjectName("extentLabel")
         self.extent_label.setWordWrap(True)
-        self.extent_label.setStyleSheet("color: gray;")
         extent_layout.addWidget(self.extent_label)
         extent_group.setLayout(extent_layout)
         main_layout.addWidget(extent_group)
 
-        # 6. 执行解译（含取消按钮，构成完整的“打断机制”）
+        # ---------------- 5. 执行解译 ----------------
         run_group = QGroupBox("5. 执行任务")
         run_layout = QVBoxLayout()
 
         run_btn_row = QHBoxLayout()
         self.run_btn = QPushButton("开始智能解译")
-        self.run_btn.setStyleSheet("font-weight: bold; padding: 6px;")
+        self.run_btn.setObjectName("runBtn")
         self.run_btn.clicked.connect(self._run_interpret)
-        run_btn_row.addWidget(self.run_btn)
+        run_btn_row.addWidget(self.run_btn, stretch=2)
 
-        self.cancel_btn = QPushButton("取消任务")
-        self.cancel_btn.setStyleSheet("padding: 6px;")
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.setObjectName("cancelBtn")
         self.cancel_btn.clicked.connect(self._cancel_interpret)
         self.cancel_btn.setEnabled(False)
-        run_btn_row.addWidget(self.cancel_btn)
+        run_btn_row.addWidget(self.cancel_btn, stretch=1)
         run_layout.addLayout(run_btn_row)
 
         self.progress_bar = QProgressBar()
@@ -206,6 +330,7 @@ class ImageInterpretDockWidget(QDockWidget):
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #64748b; font-size: 12px;")
         run_layout.addWidget(self.status_label)
 
         run_group.setLayout(run_layout)
@@ -216,6 +341,11 @@ class ImageInterpretDockWidget(QDockWidget):
         self.setWidget(container)
 
     # -------------------------------------------------------- UI 交互逻辑 ----
+    def _toggle_server_settings(self):
+        """点击右上角 ⚙️ 按钮，切换服务器配置面板显示/隐藏"""
+        is_visible = self.server_group.isVisible()
+        self.server_group.setVisible(not is_visible)
+
     def _on_model_changed(self):
         """模型切换时，动态切换显示『多选复选框』或『Prompt输入框』"""
         data = self.model_combo.currentData()
@@ -243,7 +373,6 @@ class ImageInterpretDockWidget(QDockWidget):
         return self.server_url_edit.text().strip() or DEFAULT_SERVER_URL
 
     def _try_restore_login(self):
-        """插件面板打开时，如果之前登录过、token 还没过期，就自动恢复登录状态。"""
         token = self.settings.value(SETTINGS_KEY_TOKEN, "")
         username = self.settings.value(SETTINGS_KEY_USERNAME, "")
         if not token or not username:
@@ -275,7 +404,6 @@ class ImageInterpretDockWidget(QDockWidget):
         self._update_account_ui()
 
     def _refresh_account_info(self, silent: bool = False):
-        """向服务端拉取最新的套餐/额度信息并刷新面板文案。"""
         if not self.token:
             self._update_account_ui()
             return
@@ -284,7 +412,6 @@ class ImageInterpretDockWidget(QDockWidget):
         try:
             self.account_info = client.get_me()
         except AuthApiError as e:
-            # token 过期或服务器不可达：清空本地登录态，提示重新登录
             self.token = ""
             self.username = ""
             self.account_info = {}
@@ -300,7 +427,7 @@ class ImageInterpretDockWidget(QDockWidget):
     def _update_account_ui(self):
         if not self.token:
             self.account_status_label.setText("尚未登录，请先登录 / 注册后使用解译功能")
-            self.account_status_label.setStyleSheet("color: #888888;")
+            self.account_status_label.setStyleSheet("color: #64748b;")
             self.quota_label.setText("")
             self.login_btn.setVisible(True)
             self.logout_btn.setVisible(False)
@@ -311,8 +438,8 @@ class ImageInterpretDockWidget(QDockWidget):
 
         plan = self.account_info.get("plan", "free")
         plan_label = PLAN_LABELS.get(plan, plan)
-        self.account_status_label.setText(f"已登录: {self.username}  |  当前套餐: {plan_label}")
-        self.account_status_label.setStyleSheet("color: #2e7d32;")
+        self.account_status_label.setText(f"已登录: <b>{self.username}</b>  |  套餐: <b>{plan_label}</b>")
+        self.account_status_label.setStyleSheet("color: #15803d;")
 
         if plan == "free":
             used = self.account_info.get("quota_used_today", 0)
@@ -320,7 +447,7 @@ class ImageInterpretDockWidget(QDockWidget):
             self.quota_label.setText(f"今日剩余免费次数: {max(limit - used, 0)} / {limit}")
         elif plan == "pro":
             expire = self.account_info.get("pro_expire_at", "未知")
-            self.quota_label.setText(f"包月会员生效中，到期时间: {expire}")
+            self.quota_label.setText(f"包月会员生效中 (到期: {expire})")
         elif plan == "custom":
             self.quota_label.setText("定制版/私有化部署，不限次数")
         else:
@@ -351,13 +478,14 @@ class ImageInterpretDockWidget(QDockWidget):
 
     def _on_extent_selected(self, rect: QgsRectangle):
         self.selected_extent = rect
+        crs_id = self.canvas.mapSettings().destinationCrs().authid()
         self.extent_label.setText(
-            f"范围: X[{rect.xMinimum():.2f}, {rect.xMaximum():.2f}]  "
-            f"Y[{rect.yMinimum():.2f}, {rect.yMaximum():.2f}]  "
-            f"(CRS: {self.canvas.mapSettings().destinationCrs().authid()})"
+            f"X: [{rect.xMinimum():.2f}, {rect.xMaximum():.2f}]\n"
+            f"Y: [{rect.yMinimum():.2f}, {rect.yMaximum():.2f}]\n"
+            f"CRS: {crs_id}"
         )
-        self.extent_label.setStyleSheet("color: black;")
-        self.status_label.setText("已选定范围，准备执行解译")
+        self.extent_label.setStyleSheet("color: #0f172a;")
+        self.status_label.setText("已选定解译范围")
 
     # --------------------------------------------------------------- 运行 ----
     def _run_interpret(self):
@@ -427,8 +555,6 @@ class ImageInterpretDockWidget(QDockWidget):
         task.taskCancelled.connect(self._on_cancelled)
 
         self.task = task
-        # 使用 QGIS 原生任务管理器提交任务：会自动出现在状态栏后台任务面板，
-        # 并天然带有取消按钮（与本面板的“取消任务”按钮效果一致）
         QgsApplication.taskManager().addTask(task)
 
     def _cancel_interpret(self):
@@ -474,7 +600,7 @@ class ImageInterpretDockWidget(QDockWidget):
 
         QgsProject.instance().addMapLayer(new_layer)
         self.status_label.setText(f"完成！已加载图层: {layer_name}")
-        self._refresh_account_info(silent=True)  # 刷新今日剩余免费次数
+        self._refresh_account_info(silent=True)
 
     def _on_finished_error(self, error_msg):
         self._set_running_state(False)
@@ -493,7 +619,6 @@ class ImageInterpretDockWidget(QDockWidget):
 
     # --------------------------------------------------------- 生命周期清理 ---
     def cancel_running_task(self):
-        """供插件卸载 / 面板关闭时调用，确保不会留下悬空的后台任务。"""
         if self.task is not None:
             self.task.cancel()
 
