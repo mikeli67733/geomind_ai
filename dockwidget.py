@@ -38,7 +38,7 @@ from .constants import (
     DEFAULT_SERVER_URL, SETTINGS_ORG, SETTINGS_APP,
     SETTINGS_KEY_SERVER_URL, SETTINGS_KEY_LICENSE_KEY,
     SETTINGS_KEY_TOKEN, SETTINGS_KEY_USERNAME, PLAN_LABELS,
-    FREE_PLAN_DAILY_QUOTA,
+    FREE_PLAN_DAILY_QUOTA, fetch_remote_server_url
 )
 
 # PyQt5 / PyQt6 图层过滤器枚举兼容处理
@@ -207,6 +207,13 @@ class ImageInterpretDockWidget(QDockWidget):
         self.server_url_edit = QLineEdit()
         self.server_url_edit.setPlaceholderText(DEFAULT_SERVER_URL)
         server_layout.addWidget(self.server_url_edit)
+
+        # ✨ [新增] 刷新地址按钮
+        self.refresh_url_btn = QPushButton("🔄 刷新")
+        self.refresh_url_btn.setToolTip("从远程直链重新获取最新的在线服务地址")
+        self.refresh_url_btn.clicked.connect(self._refresh_server_url)
+        server_layout.addWidget(self.refresh_url_btn)
+
         self.server_group.setLayout(server_layout)
         self.server_group.setVisible(False)  # 点击顶部 ⚙️ 展开/收起
         main_layout.addWidget(self.server_group)
@@ -347,6 +354,28 @@ class ImageInterpretDockWidget(QDockWidget):
         is_visible = self.server_group.isVisible()
         self.server_group.setVisible(not is_visible)
 
+    def _refresh_server_url(self):
+        """点击刷新按钮，重新从远程直链获取最新的服务地址"""
+        self.refresh_url_btn.setEnabled(False)
+        self.refresh_url_btn.setText("刷新中...")
+        QApplication.processEvents()
+
+        try:
+            new_url = fetch_remote_server_url()
+            if new_url:
+                self.server_url_edit.setText(new_url)
+                # 重置本地自定义标记，保证后续跟随自动同步
+                self.settings.remove(SETTINGS_KEY_SERVER_URL)
+                self.settings.setValue("is_custom_server", False)
+                QMessageBox.information(self, "刷新成功", f"成功获取最新在线服务器地址：\n{new_url}")
+            else:
+                QMessageBox.warning(self, "提示", "未能获取到有效的最新地址，请检查网络连接")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"刷新服务器地址失败: {e}")
+        finally:
+            self.refresh_url_btn.setEnabled(True)
+            self.refresh_url_btn.setText("🔄 刷新")
+
     def _on_model_changed(self):
         """模型切换时，动态切换显示『多选复选框』或『Prompt输入框』"""
         data = self.model_combo.currentData()
@@ -362,7 +391,6 @@ class ImageInterpretDockWidget(QDockWidget):
             self.class_group.setVisible(False)
             self.prompt_group.setVisible(False)
 
-
     def showEvent(self, event):
         """当面板每次显示/重新打开时，自动刷新账号状态"""
         super().showEvent(event)
@@ -371,7 +399,6 @@ class ImageInterpretDockWidget(QDockWidget):
 
     def _load_settings(self):
         """加载服务器配置：优先使用远程配置拉取的最新地址"""
-        from .constants import fetch_remote_server_url
         remote_url = fetch_remote_server_url()
 
         # 读取用户是否手动开启了“自定义服务器地址”
@@ -390,7 +417,6 @@ class ImageInterpretDockWidget(QDockWidget):
 
     def _save_settings(self):
         current_url = self.server_url_edit.text().strip()
-        from .constants import fetch_remote_server_url
         remote_url = fetch_remote_server_url()
 
         # 只有当用户手动修改的地址与远程最新地址不同时，才标记为“自定义地址”保存
@@ -721,7 +747,6 @@ class ImageInterpretDockWidget(QDockWidget):
         except Exception as e:
             print(f"[clip] 矢量结果裁剪失败: {e}")
         return None
-
 
     # --------------------------------------------------------- 生命周期清理 ---
     def cancel_running_task(self):
