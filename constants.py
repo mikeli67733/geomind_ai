@@ -14,7 +14,7 @@ REMOTE_CONFIG_URLS = [
     "https://raw.githubusercontent.com/mikeli67733/geomind_ai/main/server_config.json",
 ]
 
-FALLBACK_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
+# FALLBACK_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
 
 
 def fetch_remote_server_url() -> str:
@@ -38,9 +38,9 @@ def fetch_remote_server_url() -> str:
             print(f"[GeoMind] 从 {url} 获取配置失败: {e}")
             continue
 
-    # 所有远程源都拉取失败时，回退兜底地址
-    print("[GeoMind] 所有远程配置源均获取失败，回退默认地址")
-    return FALLBACK_SERVER_URL
+    # # 所有远程源都拉取失败时，回退兜底地址
+    # print("[GeoMind] 所有远程配置源均获取失败，回退默认地址")
+    # return FALLBACK_SERVER_URL
 
 
 DEFAULT_SERVER_URL = fetch_remote_server_url()
