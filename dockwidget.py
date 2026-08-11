@@ -11,6 +11,7 @@
 """
 
 import os
+import tempfile
 from datetime import datetime
 
 from qgis.PyQt.QtCore import Qt, QSettings
@@ -22,7 +23,7 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.core import (
     QgsProject, QgsMapLayerProxyModel, QgsRasterLayer, QgsVectorLayer,
-    QgsRectangle, QgsCoordinateTransform, QgsApplication
+    QgsRectangle, QgsCoordinateTransform, QgsApplication, QgsCoordinateReferenceSystem
 )
 from qgis.gui import QgsMapLayerComboBox
 
@@ -535,6 +536,10 @@ class ImageInterpretDockWidget(QDockWidget):
 
         extent_in_layer_crs = self._transform_extent_to_layer_crs(self.selected_extent, layer)
 
+        # 保存画布 CRS 下的原始范围，用于结果加载后裁剪回框选区域
+        self._task_canvas_extent = QgsRectangle(self.selected_extent)
+        self._task_canvas_crs = self.canvas.mapSettings().destinationCrs()
+
         self._set_running_state(True)
         self.status_label.setText("正在后台处理，请稍候...")
 
@@ -598,6 +603,16 @@ class ImageInterpretDockWidget(QDockWidget):
             self.status_label.setText("加载结果失败")
             return
 
+        # 将结果裁剪回用户原始框选范围（消除 GDAL 像素对齐 + 服务端分块叠加的溢出）
+        canvas_extent = getattr(self, '_task_canvas_extent', None)
+        canvas_crs = getattr(self, '_task_canvas_crs', None)
+        if canvas_extent and canvas_crs:
+            clipped = self._clip_layer_to_extent(
+                new_layer, result_path, QgsRectangle(canvas_extent), canvas_crs, layer_name
+            )
+            if clipped and clipped.isValid():
+                new_layer = clipped
+
         QgsProject.instance().addMapLayer(new_layer)
         self.status_label.setText(f"完成！已加载图层: {layer_name}")
         self._refresh_account_info(silent=True)
@@ -616,6 +631,63 @@ class ImageInterpretDockWidget(QDockWidget):
         self._set_running_state(False)
         self.task = None
         self.status_label.setText("任务已取消")
+
+    def _clip_layer_to_extent(self, layer, result_path, extent, extent_crs, layer_name):
+        """将解译结果图层裁剪回用户框选的原始范围"""
+        try:
+            layer_crs = layer.crs()
+            if extent_crs != layer_crs:
+                transform = QgsCoordinateTransform(extent_crs, layer_crs, QgsProject.instance())
+                extent = transform.transformBoundingBox(extent)
+        except Exception as e:
+            print(f"[clip] 坐标转换失败，跳过裁剪: {e}")
+            return None
+
+        if isinstance(layer, QgsRasterLayer):
+            return self._clip_raster_result(result_path, extent, layer_name)
+        else:
+            return self._clip_vector_result(result_path, extent, layer_name)
+
+    def _clip_raster_result(self, src_path, extent, layer_name):
+        """使用 GDAL 将栅格解译结果裁剪到框选范围"""
+        try:
+            from osgeo import gdal
+
+            out_path = os.path.join(tempfile.gettempdir(), f"clipped_result_{id(self)}.tif")
+            proj_win = [
+                extent.xMinimum(),
+                extent.yMaximum(),
+                extent.xMaximum(),
+                extent.yMinimum(),
+            ]
+            options = gdal.TranslateOptions(
+                projWin=proj_win,
+                creationOptions=["COMPRESS=DEFLATE", "PREDICTOR=2", "TILED=YES"],
+            )
+            ds = gdal.Translate(out_path, src_path, options=options)
+            ds = None
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                return QgsRasterLayer(out_path, layer_name)
+        except Exception as e:
+            print(f"[clip] 栅格结果裁剪失败: {e}")
+        return None
+
+    def _clip_vector_result(self, src_path, extent, layer_name):
+        """使用 QGIS Processing 将矢量解译结果裁剪到框选范围"""
+        try:
+            from qgis import processing
+            result = processing.run("native:extractbyextent", {
+                'INPUT': src_path,
+                'EXTENT': extent,
+                'OUTPUT': 'memory:',
+            })
+            clipped = result['OUTPUT']
+            if clipped and clipped.isValid():
+                clipped.setName(layer_name)
+                return clipped
+        except Exception as e:
+            print(f"[clip] 矢量结果裁剪失败: {e}")
+        return None
 
     # --------------------------------------------------------- 生命周期清理 ---
     def cancel_running_task(self):
