@@ -67,40 +67,40 @@ def _try_gdal_translate(raster_layer, extent, out_path):
     return None
 
 
-def _write_with_raster_file_writer(raster_layer, extent, out_path):
-    """方案 2: 使用 QGIS 内置 QgsRasterFileWriter 原生 C++ 管道写盘"""
-    try:
-        provider = raster_layer.dataProvider()
-        pipe = QgsRasterPipe()
-        if not pipe.set(provider.clone()):
-            raise RuntimeError("无法创建栅格数据管道")
-
-        create_options = ["COMPRESS=DEFLATE", "PREDICTOR=2", "TILED=YES"]
-        writer = QgsRasterFileWriter(out_path)
-        writer.setCreateOptions(create_options)  # 设置压缩参数
-
-        x_res = raster_layer.rasterUnitsPerPixelX()
-        y_res = raster_layer.rasterUnitsPerPixelY()
-        if x_res <= 0 or y_res <= 0:
-            x_res = y_res = 1.0
-
-        cols = max(1, int(round(extent.width() / x_res)))
-        rows = max(1, int(round(extent.height() / y_res)))
-
-        transform_ctx = QgsProject.instance().transformContext()
-        error = writer.writeRaster(
-            pipe,
-            cols,
-            rows,
-            extent,
-            raster_layer.crs(),
-            transform_ctx,
-        )
-
-        if error == QgsRasterFileWriter.NoError and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            return out_path
-
-        raise RuntimeError(f"QgsRasterFileWriter 写入失败，错误码: {error}")
-
-    except Exception as err:
-        raise RuntimeError(f"图层裁剪失败: {str(err)}")
+# def _write_with_raster_file_writer(raster_layer, extent, out_path):
+#     """方案 2: 使用 QGIS 内置 QgsRasterFileWriter 原生 C++ 管道写盘"""
+#     try:
+#         provider = raster_layer.dataProvider()
+#         pipe = QgsRasterPipe()
+#         if not pipe.set(provider.clone()):
+#             raise RuntimeError("无法创建栅格数据管道")
+#
+#         create_options = ["COMPRESS=DEFLATE", "PREDICTOR=2", "TILED=YES"]
+#         writer = QgsRasterFileWriter(out_path)
+#         writer.setCreateOptions(create_options)  # 设置压缩参数
+#
+#         x_res = raster_layer.rasterUnitsPerPixelX()
+#         y_res = raster_layer.rasterUnitsPerPixelY()
+#         if x_res <= 0 or y_res <= 0:
+#             x_res = y_res = 1.0
+#
+#         cols = max(1, int(round(extent.width() / x_res)))
+#         rows = max(1, int(round(extent.height() / y_res)))
+#
+#         transform_ctx = QgsProject.instance().transformContext()
+#         error = writer.writeRaster(
+#             pipe,
+#             cols,
+#             rows,
+#             extent,
+#             raster_layer.crs(),
+#             transform_ctx,
+#         )
+#
+#         if error == QgsRasterFileWriter.NoError and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+#             return out_path
+#
+#         raise RuntimeError(f"QgsRasterFileWriter 写入失败，错误码: {error}")
+#
+#     except Exception as err:
+#         raise RuntimeError(f"图层裁剪失败: {str(err)}")
