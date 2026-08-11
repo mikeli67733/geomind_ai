@@ -27,7 +27,6 @@ def fetch_remote_server_url() -> str:
             resp.raise_for_status()
 
             remote_cfg = resp.json()
-            print(remote_cfg)
 
             server_url = remote_cfg.get("server_url")
 
@@ -44,7 +43,6 @@ def fetch_remote_server_url() -> str:
 
 
 DEFAULT_SERVER_URL = fetch_remote_server_url()
-print(DEFAULT_SERVER_URL)
 
 MODELS = [
     ("土地利用/多要素识别 (LANDUSE)", "LANDUSE", "landuse"),

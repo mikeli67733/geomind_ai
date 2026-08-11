@@ -180,6 +180,14 @@ class ImageInterpretDockWidget(QDockWidget):
                 font-size: 11px;
                 color: #475569;
             }
+            QLabel#noticeBanner {
+                background-color: #f0f9ff;
+                border: 1px solid #bae6fd;
+                border-radius: 6px;
+                padding: 6px 8px;
+                color: #0369a1;
+                font-size: 11px;
+            }
         """)
 
         self.machine_id = get_machine_id()
@@ -202,25 +210,40 @@ class ImageInterpretDockWidget(QDockWidget):
 
         # ---------------- 服务器配置（默认隐藏） ----------------
         self.server_group = QGroupBox("服务器配置")
+        server_vlayout = QVBoxLayout()
+
         server_layout = QHBoxLayout()
         server_layout.addWidget(QLabel("服务地址:"))
         self.server_url_edit = QLineEdit()
         self.server_url_edit.setPlaceholderText(DEFAULT_SERVER_URL)
         server_layout.addWidget(self.server_url_edit)
 
-        # ✨ [新增] 刷新地址按钮
+        # 刷新地址按钮
         self.refresh_url_btn = QPushButton("🔄 刷新")
         self.refresh_url_btn.setToolTip("从远程直链重新获取最新的在线服务地址")
         self.refresh_url_btn.clicked.connect(self._refresh_server_url)
         server_layout.addWidget(self.refresh_url_btn)
 
-        self.server_group.setLayout(server_layout)
+        server_vlayout.addLayout(server_layout)
+
+        server_tip = QLabel("提示：若服务端地址发生变更，点击【刷新】按钮即可同步最新的在线通道。")
+        server_tip.setStyleSheet("color: #64748b; font-size: 11px;")
+        server_tip.setWordWrap(True)
+        server_vlayout.addWidget(server_tip)
+
+        self.server_group.setLayout(server_vlayout)
         self.server_group.setVisible(False)  # 点击顶部 ⚙️ 展开/收起
         main_layout.addWidget(self.server_group)
 
         # ---------------- 0. 账号与套餐 ----------------
         account_group = QGroupBox("账号与套餐")
         account_layout = QVBoxLayout()
+
+        # ✨ [新增] 常用网络异常指引常驻提示卡片
+        self.notice_banner = QLabel("💡 提示：若遇到无法登录或无法解译，请点击右上角 ⚙️ 展开设置并点击【🔄 刷新】按钮同步最新服务地址。")
+        self.notice_banner.setObjectName("noticeBanner")
+        self.notice_banner.setWordWrap(True)
+        account_layout.addWidget(self.notice_banner)
 
         self.account_status_label = QLabel("尚未登录")
         self.account_status_label.setWordWrap(True)
@@ -479,7 +502,11 @@ class ImageInterpretDockWidget(QDockWidget):
             self.settings.remove(SETTINGS_KEY_USERNAME)
             self._update_account_ui()
             if not silent:
-                QMessageBox.warning(self, "提示", f"获取账号信息失败: {e}")
+                QMessageBox.warning(
+                    self,
+                    "提示",
+                    f"获取账号信息失败: {e}\n\n💡 提示：若服务地址已更新，请点击右上角 ⚙️ 设置中的【🔄 刷新】按钮。"
+                )
             return
 
         self._update_account_ui()
@@ -520,7 +547,7 @@ class ImageInterpretDockWidget(QDockWidget):
             return
 
         dialog = PlanDialog(self._current_server_url(), self.token, self.account_info,
-                             self.plugin_dir, self)
+                            self.plugin_dir, self)
         dialog.exec_()
         if dialog.account_refreshed:
             self._refresh_account_info(silent=True)
@@ -680,7 +707,10 @@ class ImageInterpretDockWidget(QDockWidget):
         self._set_running_state(False)
         self.task = None
         self.status_label.setText("解译失败")
-        QMessageBox.critical(self, "解译失败", error_msg)
+
+        hint_suffix = "\n\n💡 提示：如果遇到网络或服务器连接错误，请点击右上角 ⚙️ 设置并点击【🔄 刷新】尝试更新服务地址。"
+        QMessageBox.critical(self, "解译失败", f"{error_msg}{hint_suffix}")
+
         if "登录已过期" in error_msg:
             self._logout()
         elif "免费次数已用完" in error_msg or "402" in error_msg:
