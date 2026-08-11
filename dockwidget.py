@@ -363,22 +363,44 @@ class ImageInterpretDockWidget(QDockWidget):
             self.prompt_group.setVisible(False)
 
 
+    def showEvent(self, event):
+        """当面板每次显示/重新打开时，自动刷新账号状态"""
+        super().showEvent(event)
+        if self.token:
+            self._refresh_account_info(silent=True)
+
     def _load_settings(self):
-        # 每次打开时，重新动态获取最新的远程地址
+        """加载服务器配置：优先使用远程配置拉取的最新地址"""
         from .constants import fetch_remote_server_url
         remote_url = fetch_remote_server_url()
 
-        # 获取本地保存的地址
+        # 读取用户是否手动开启了“自定义服务器地址”
+        is_custom = self.settings.value("is_custom_server", False, type=bool)
         saved_url = self.settings.value(SETTINGS_KEY_SERVER_URL, "")
 
-        # 如果本地没有保存过，或者本地地址等于旧的兜底地址，则自动刷新为远程最新地址
-        if not saved_url or saved_url == DEFAULT_SERVER_URL:
-            self.server_url_edit.setText(remote_url)
-        else:
+        if is_custom and saved_url:
+            # 用户手动修改并保存了自定义地址
             self.server_url_edit.setText(saved_url)
+        else:
+            # 默认强行同步为远程最新地址，并清除本地旧缓存
+            target_url = remote_url or DEFAULT_SERVER_URL
+            self.server_url_edit.setText(target_url)
+            self.settings.remove(SETTINGS_KEY_SERVER_URL)
+            self.settings.setValue("is_custom_server", False)
 
     def _save_settings(self):
-        self.settings.setValue(SETTINGS_KEY_SERVER_URL, self.server_url_edit.text().strip())
+        current_url = self.server_url_edit.text().strip()
+        from .constants import fetch_remote_server_url
+        remote_url = fetch_remote_server_url()
+
+        # 只有当用户手动修改的地址与远程最新地址不同时，才标记为“自定义地址”保存
+        if current_url and current_url != remote_url:
+            self.settings.setValue(SETTINGS_KEY_SERVER_URL, current_url)
+            self.settings.setValue("is_custom_server", True)
+        else:
+            # 如果与远程地址相同，清除自定义标记，保证下次能自动跟随远程更新
+            self.settings.remove(SETTINGS_KEY_SERVER_URL)
+            self.settings.setValue("is_custom_server", False)
 
     # ------------------------------------------------------------- 账号登录 ---
     def _current_server_url(self) -> str:
@@ -699,6 +721,7 @@ class ImageInterpretDockWidget(QDockWidget):
         except Exception as e:
             print(f"[clip] 矢量结果裁剪失败: {e}")
         return None
+
 
     # --------------------------------------------------------- 生命周期清理 ---
     def cancel_running_task(self):
