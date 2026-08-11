@@ -49,7 +49,14 @@ def _try_gdal_translate(raster_layer, extent, out_path):
             extent.xMaximum(),
             extent.yMinimum(),
         ]
-        options = gdal.TranslateOptions(projWin=proj_win)
+        creation_options = [
+            "COMPRESS=DEFLATE",  # 无损压缩
+            "PREDICTOR=2",  # 提升压缩率（对 8bit/16bit 极其有效）
+            "TILED=YES",  # 分块存储
+            "BLOCKXSIZE=256",
+            "BLOCKYSIZE=256"
+        ]
+        options = gdal.TranslateOptions(projWin=proj_win, creationOptions=creation_options)
         ds = gdal.Translate(out_path, src_path, options=options)
         ds = None
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
@@ -68,7 +75,9 @@ def _write_with_raster_file_writer(raster_layer, extent, out_path):
         if not pipe.set(provider.clone()):
             raise RuntimeError("无法创建栅格数据管道")
 
+        create_options = ["COMPRESS=DEFLATE", "PREDICTOR=2", "TILED=YES"]
         writer = QgsRasterFileWriter(out_path)
+        writer.setCreateOptions(create_options)  # 设置压缩参数
 
         x_res = raster_layer.rasterUnitsPerPixelX()
         y_res = raster_layer.rasterUnitsPerPixelY()
