@@ -2,22 +2,27 @@
 """
 插件常量与配置集中定义模块。
 """
+# constants.py
+import time
 import requests
 
-# 远程配置直链
 REMOTE_CONFIG_URL = "https://cdn.jsdelivr.net/gh/mikeli67733/geomind_ai@main/server_config.json"
-# 兜底默认地址，网络请求失败降级
 FALLBACK_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
 
-# 加载远程 server_url
-try:
-    resp = requests.get(REMOTE_CONFIG_URL, timeout=10)
-    resp.raise_for_status()
-    remote_cfg = resp.json()
-    DEFAULT_SERVER_URL = remote_cfg.get("server_url", FALLBACK_SERVER_URL)
-except Exception:
-    # 网络错误、超时、json解析失败全部回退兜底
-    DEFAULT_SERVER_URL = FALLBACK_SERVER_URL
+def fetch_remote_server_url() -> str:
+    """动态拉取远程服务地址"""
+    try:
+        # 加上时间戳强制刷掉 jsDelivr 节点缓存
+        cache_buster_url = f"{REMOTE_CONFIG_URL}?_t={int(time.time())}"
+        resp = requests.get(cache_buster_url, timeout=5)
+        resp.raise_for_status()
+        remote_cfg = resp.json()
+        return remote_cfg.get("server_url", FALLBACK_SERVER_URL)
+    except Exception as e:
+        print(f"[GeoMind] 获取远程配置失败，回退默认地址: {e}")
+        return FALLBACK_SERVER_URL
+
+DEFAULT_SERVER_URL = fetch_remote_server_url()
 
 
 MODELS = [

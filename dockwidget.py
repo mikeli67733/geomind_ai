@@ -362,9 +362,20 @@ class ImageInterpretDockWidget(QDockWidget):
             self.class_group.setVisible(False)
             self.prompt_group.setVisible(False)
 
+
     def _load_settings(self):
-        url = self.settings.value(SETTINGS_KEY_SERVER_URL, DEFAULT_SERVER_URL)
-        self.server_url_edit.setText(url)
+        # 每次打开时，重新动态获取最新的远程地址
+        from .constants import fetch_remote_server_url
+        remote_url = fetch_remote_server_url()
+
+        # 获取本地保存的地址
+        saved_url = self.settings.value(SETTINGS_KEY_SERVER_URL, "")
+
+        # 如果本地没有保存过，或者本地地址等于旧的兜底地址，则自动刷新为远程最新地址
+        if not saved_url or saved_url == DEFAULT_SERVER_URL:
+            self.server_url_edit.setText(remote_url)
+        else:
+            self.server_url_edit.setText(saved_url)
 
     def _save_settings(self):
         self.settings.setValue(SETTINGS_KEY_SERVER_URL, self.server_url_edit.text().strip())
