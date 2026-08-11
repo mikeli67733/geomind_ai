@@ -8,8 +8,6 @@ import requests
 
 # 配置源列表：优先使用国内能直连的加速代理，备用 GitHub 官方 Raw
 REMOTE_CONFIG_URLS = [
-    # 方案 A：GHProxy 代理（国内连接极快，且无 jsDelivr 缓存问题）
-    "https://ghproxy.net/https://raw.githubusercontent.com/mikeli67733/geomind_ai/main/server_config.json",
     # 方案 B：GitHub 官方 Raw 直链
     "https://raw.githubusercontent.com/mikeli67733/geomind_ai/main/server_config.json",
 ]
