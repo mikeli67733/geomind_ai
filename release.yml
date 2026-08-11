@@ -1,1 +1,87 @@
+name: QGIS Plugin Release & Auto Update XML
 
+on:
+  push:
+    tags:
+      - 'v*' # 当你 push 以 v 开头的标签（如 v2.9, v3.0）时触发
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # 1. 自动打 zip 包（排除开发文件、数据库、私钥等敏感文件）
+      - name: Create Plugin Zip
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "Building version: $VERSION"
+          
+          # 创建打包目录
+          mkdir -p build/geomind_ai
+          
+          # 拷贝必要源码（排除测试文件和敏感配置）
+          rsync -av --progress ./ build/geomind_ai/ \
+            --exclude '.git*' \
+            --exclude '.github' \
+            --exclude '*.db' \
+            --exclude '.env' \
+            --exclude '*.pem' \
+            --exclude 'card_keys.txt' \
+            --exclude 'build' \
+            --exclude '__pycache__'
+            
+          cd build
+          zip -r ../geomind_ai.zip geomind_ai
+          cd ..
+
+      # 2. 自动更新 plugins.xml 中的版本号和下载链接
+      - name: Update plugins.xml
+        run: |
+          TAG_NAME=${GITHUB_REF_NAME}
+          VERSION=${TAG_NAME#v}
+          NEW_URL="https://github.com/${{ github.repository }}/releases/download/${TAG_NAME}/geomind_ai.zip"
+          
+          python -c "
+          import xml.etree.ElementTree as ET
+          
+          tree = ET.parse('plugins.xml')
+          root = tree.getroot()
+          plugin = root.find('pyqgis_plugin')
+          
+          # 更新 XML 中的版本号和 URL
+          plugin.set('version', '$VERSION')
+          plugin.find('version').text = '$VERSION'
+          plugin.find('download_url').text = '$NEW_URL'
+          
+          tree.write('plugins.xml', encoding='UTF-8', xml_declaration=True)
+          "
+          echo "plugins.xml updated successfully."
+
+      # 3. 自动提交更新后的 plugins.xml 到仓库主分支
+      - name: Commit and push updated plugins.xml
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add plugins.xml
+          git commit -m "chore: auto update plugins.xml to ${GITHUB_REF_NAME}" || exit 0
+          git push origin HEAD:main
+
+      # 4. 自动创建 GitHub Release 并上传 geomind_ai.zip
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: geomind_ai.zip
+          name: "Release ${{ github.ref_name }}"
+          body: "Auto-released by GitHub Actions."
+          draft: false
+          prerelease: false
