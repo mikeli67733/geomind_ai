@@ -102,8 +102,11 @@ class InterpretTask(QgsTask):
                 self.raster_layer, self.extent, f"{os.getpid()}_{id(self)}"
             )
 
-            self._raise_if_cancelled()
-            self.progressMessage.emit("正在提交任务到云端服务器...")
+            # 显示裁剪后文件大小，方便判断上传耗时
+            clip_size_mb = os.path.getsize(clipped_path) / (1024 * 1024)
+            self.progressMessage.emit(
+                f"影像裁剪完成 ({clip_size_mb:.1f} MB)，正在提交任务到云端服务器..."
+            )
             self._task_id = self._client.submit_task(
                 clipped_path, self.model_key, self.target_class, self.prompt
             )
