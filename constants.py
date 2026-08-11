@@ -6,21 +6,42 @@
 import time
 import requests
 
-REMOTE_CONFIG_URL = "https://raw.githubusercontent.com/mikeli67733/geomind_ai/refs/heads/main/server_config.json"
+# 配置源列表：优先使用国内能直连的加速代理，备用 GitHub 官方 Raw
+REMOTE_CONFIG_URLS = [
+    # 方案 A：GHProxy 代理（国内连接极快，且无 jsDelivr 缓存问题）
+    "https://ghproxy.net/https://raw.githubusercontent.com/mikeli67733/geomind_ai/main/server_config.json",
+    # 方案 B：GitHub 官方 Raw 直链
+    "https://raw.githubusercontent.com/mikeli67733/geomind_ai/main/server_config.json",
+]
+
 FALLBACK_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
 
+
 def fetch_remote_server_url() -> str:
-    """动态拉取远程服务地址"""
-    try:
-        # 加上时间戳强制刷掉 jsDelivr 节点缓存
-        cache_buster_url = f"{REMOTE_CONFIG_URL}?_t={int(time.time())}"
-        resp = requests.get(cache_buster_url, timeout=5)
-        resp.raise_for_status()
-        remote_cfg = resp.json()
-        return remote_cfg.get("server_url", FALLBACK_SERVER_URL)
-    except Exception as e:
-        print(f"[GeoMind] 获取远程配置失败，回退默认地址: {e}")
-        return FALLBACK_SERVER_URL
+    """动态拉取远程服务地址（支持多源容错与国内加速）"""
+    timestamp = int(time.time())
+
+    for url in REMOTE_CONFIG_URLS:
+        try:
+            # 加上时间戳，防止本地 HTTP 缓存
+            cache_buster_url = f"{url}?_t={timestamp}"
+            resp = requests.get(cache_buster_url, timeout=4)
+            resp.raise_for_status()
+
+            remote_cfg = resp.json()
+            server_url = remote_cfg.get("server_url")
+
+            if server_url:
+                return server_url
+        except Exception as e:
+            # 单个源失败时打印日志，并自动尝试下一个源
+            print(f"[GeoMind] 从 {url} 获取配置失败: {e}")
+            continue
+
+    # 所有远程源都拉取失败时，回退兜底地址
+    print("[GeoMind] 所有远程配置源均获取失败，回退默认地址")
+    return FALLBACK_SERVER_URL
+
 
 DEFAULT_SERVER_URL = fetch_remote_server_url()
 
