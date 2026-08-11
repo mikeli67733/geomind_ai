@@ -6,7 +6,7 @@
 import time
 import requests
 
-REMOTE_CONFIG_URL = "https://cdn.jsdelivr.net/gh/mikeli67733/geomind_ai@main/server_config.json"
+REMOTE_CONFIG_URL = "https://raw.githubusercontent.com/mikeli67733/geomind_ai/refs/heads/main/server_config.json"
 FALLBACK_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
 
 def fetch_remote_server_url() -> str:
