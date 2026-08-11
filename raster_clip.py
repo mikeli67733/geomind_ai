@@ -18,7 +18,7 @@ import tempfile
 from qgis.core import QgsRasterFileWriter, QgsRasterPipe, QgsProject
 
 # JPEG 压缩质量（85 兼顾体积与质量，可根据需要调整 75-95）
-JPEG_QUALITY = 85
+JPEG_QUALITY = 20
 
 
 def clip_raster_to_temp(raster_layer, extent, unique_suffix: str) -> str:
