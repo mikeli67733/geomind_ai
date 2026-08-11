@@ -2,6 +2,23 @@
 """
 插件常量与配置集中定义模块。
 """
+import requests
+
+# 远程配置直链
+REMOTE_CONFIG_URL = "https://cdn.jsdelivr.net/gh/mikeli67733/geomind_ai@main/server_config.json"
+# 兜底默认地址，网络请求失败降级
+FALLBACK_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
+
+# 加载远程 server_url
+try:
+    resp = requests.get(REMOTE_CONFIG_URL, timeout=10)
+    resp.raise_for_status()
+    remote_cfg = resp.json()
+    DEFAULT_SERVER_URL = remote_cfg.get("server_url", FALLBACK_SERVER_URL)
+except Exception:
+    # 网络错误、超时、json解析失败全部回退兜底
+    DEFAULT_SERVER_URL = FALLBACK_SERVER_URL
+
 
 MODELS = [
     ("土地利用/多要素识别 (LANDUSE)", "LANDUSE", "landuse"),
@@ -37,7 +54,6 @@ API_PAYMENT_REDEEM = "/api/v1/payment/redeem"
 XIANYU_PRODUCT_URL = "https://m.tb.cn/h.8SfKfsd?tk=u3XFgAMYbS2"
 
 # --------------------------------------------------------------- 默认设置 ---
-DEFAULT_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
 DEFAULT_POLL_INTERVAL = 2.0
 CANCEL_CHECK_INTERVAL = 0.3
 DEFAULT_TIMEOUT = 600
