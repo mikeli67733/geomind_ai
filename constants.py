@@ -9,10 +9,10 @@ import requests
 # 配置源列表：优先使用国内能直连的加速代理，备用 GitHub 官方 Raw
 REMOTE_CONFIG_URLS = [
     # 方案 B：GitHub 官方 Raw 直链
-    "https://raw.githubusercontent.com/mikeli67733/geomind_ai/main/server_config.json",
+    "https://api.npoint.io/73f56594195f39efc03d",
 ]
 
-FALLBACK_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
+# FALLBACK_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
 
 
 def fetch_remote_server_url() -> str:
@@ -27,6 +27,8 @@ def fetch_remote_server_url() -> str:
             resp.raise_for_status()
 
             remote_cfg = resp.json()
+            print(remote_cfg)
+
             server_url = remote_cfg.get("server_url")
 
             if server_url:
@@ -36,13 +38,13 @@ def fetch_remote_server_url() -> str:
             print(f"[GeoMind] 从 {url} 获取配置失败: {e}")
             continue
 
-    # 所有远程源都拉取失败时，回退兜底地址
-    print("[GeoMind] 所有远程配置源均获取失败，回退默认地址")
-    return FALLBACK_SERVER_URL
+    # # 所有远程源都拉取失败时，回退兜底地址
+    # print("[GeoMind] 所有远程配置源均获取失败，回退默认地址")
+    # return FALLBACK_SERVER_URL
 
 
 DEFAULT_SERVER_URL = fetch_remote_server_url()
-
+print(DEFAULT_SERVER_URL)
 
 MODELS = [
     ("土地利用/多要素识别 (LANDUSE)", "LANDUSE", "landuse"),
