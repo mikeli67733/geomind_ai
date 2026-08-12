@@ -6,12 +6,9 @@ GeoMind AI 云端服务 HTTP 客户端。
 - 只负责“提交任务 / 查询状态 / 下载结果 / 请求取消”这几个 HTTP 动作
 - 不感知 QGIS / GDAL / 线程模型，方便未来单独测试或替换实现
 
-打断机制说明：
-requests 库发起的单次 HTTP 请求一旦发出无法从外部“硬中断”，
-因此这里的取消策略是“在两次网络请求之间的空档尽快响应取消”，
-配合 InterpretTask 中的高频 isCanceled() 检查，可以做到：
-- 排队等待/轮询阶段：秒级响应取消
-- 单次上传/下载请求进行中：该次请求完成后立刻停止，不再发起下一次请求
+更新内容：
+1. 增强 submit_task，支持双图 (image + image_after) 打包上传（用于变化检测）
+2. 增强 get_status / download_result，支持带上 model_key 帮助网关精准路由
 """
 
 import os
@@ -39,8 +36,7 @@ class GeoMindApiClient:
         self.machine_id = machine_id
         self.submit_timeout = submit_timeout
         self.request_timeout = request_timeout
-        # 登录后拿到的 JWT。账号网关校验的是这个 token，license_key/machine_id
-        # 只作为兼容字段随请求带过去（网关会用用户名覆盖 machine_id 做统计）。
+        # 登录后拿到的 JWT。账号网关校验的是这个 token
         self.token = token
 
     def _auth_headers(self) -> dict:
@@ -56,8 +52,12 @@ class GeoMindApiClient:
 
     # ------------------------------------------------------------ 提交任务 ---
     def submit_task(self, image_path: str, model_key: str,
-                     target_class: str = "", prompt: str = "") -> str:
-        """提交解译任务，返回 task_id。"""
+                    target_class: str = "", prompt: str = "",
+                    image_after_path: str = None) -> str:
+        """
+        提交解译任务，返回 task_id。
+        支持单图提交 (image_path) 或双图提交 (image_path + image_after_path)
+        """
         from .constants import API_SUBMIT
         url = f"{self.server_url}{API_SUBMIT}"
         data = {
@@ -70,10 +70,22 @@ class GeoMindApiClient:
         if prompt:
             data['prompt'] = prompt
 
-        with open(image_path, 'rb') as f:
-            files = {'image': (os.path.basename(image_path), f, 'image/tiff')}
+        files = {}
+        f1 = open(image_path, 'rb')
+        files['image'] = (os.path.basename(image_path), f1, 'image/tiff')
+
+        f2 = None
+        if image_after_path and os.path.exists(image_after_path):
+            f2 = open(image_after_path, 'rb')
+            files['image_after'] = (os.path.basename(image_after_path), f2, 'image/tiff')
+
+        try:
             resp = self._session.post(url, files=files, data=data, timeout=self.submit_timeout,
                                        headers=self._auth_headers())
+        finally:
+            f1.close()
+            if f2:
+                f2.close()
 
         if resp.status_code == 402:
             # 账号网关：今日免费次数已用完
@@ -86,35 +98,37 @@ class GeoMindApiClient:
         return resp.json()["task_id"]
 
     # ------------------------------------------------------------ 查询状态 ---
-    def get_status(self, task_id: str) -> dict:
+    def get_status(self, task_id: str, model_key: str = "") -> dict:
         from .constants import API_STATUS
         url = f"{self.server_url}{API_STATUS.format(task_id=task_id)}"
-        resp = self._session.get(url, timeout=self.request_timeout, headers=self._auth_headers())
+        params = {'model_key': model_key} if model_key else {}
+        resp = self._session.get(url, params=params, timeout=self.request_timeout, headers=self._auth_headers())
         if resp.status_code != 200:
             raise RuntimeError(f"查询任务状态失败 ({resp.status_code}): {self._extract_error(resp)}")
         return resp.json()
 
     # ------------------------------------------------------------ 下载结果 ---
-    def download_result(self, task_id: str, dest_path: str) -> None:
+    def download_result(self, task_id: str, dest_path: str, model_key: str = "") -> None:
         from .constants import API_RESULT
         url = f"{self.server_url}{API_RESULT.format(task_id=task_id)}"
-        resp = self._session.get(url, timeout=60, headers=self._auth_headers())
+        params = {'model_key': model_key} if model_key else {}
+        resp = self._session.get(url, params=params, timeout=60, headers=self._auth_headers())
         if resp.status_code != 200:
             raise RuntimeError(f"下载结果文件失败 ({resp.status_code}): {self._extract_error(resp)}")
         with open(dest_path, 'wb') as f:
             f.write(resp.content)
 
     # ------------------------------------------------------ 取消任务(尽力而为) ---
-    def cancel_task(self, task_id: str) -> None:
+    def cancel_task(self, task_id: str, model_key: str = "") -> None:
         """
         通知服务端取消任务。这是“尽力而为”的调用：
-        如果服务端未实现取消接口，或网络异常，都会被静默忽略，
-        因为本地任务无论如何都会立刻停止轮询/停止等待。
+        如果服务端未实现取消接口，或网络异常，都会被静默忽略。
         """
         from .constants import API_CANCEL
         try:
             url = f"{self.server_url}{API_CANCEL.format(task_id=task_id)}"
-            self._session.post(url, timeout=5, headers=self._auth_headers())
+            params = {'model_key': model_key} if model_key else {}
+            self._session.post(url, params=params, timeout=5, headers=self._auth_headers())
         except Exception:
             pass
 

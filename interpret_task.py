@@ -3,22 +3,9 @@
 InterpretTask：基于 QGIS 原生任务框架 (QgsTask + QgsTaskManager) 实现的
 异步解译任务，取代原先手写的 QThread 方案 (worker.py)。
 
-相比 QThread 自己维护线程 + 信号，使用 QgsTask 的收益：
-- 自动出现在 QGIS 状态栏「后台任务」面板与任务管理器里，用户无需依赖
-  插件自绘的进度条也能看到进度、取消任务
-- QgsTaskManager 在 QGIS 退出 / 插件卸载时会自动请求取消所有任务，
-  避免出现线程未回收就被强制退出导致崩溃的问题
-- 与 Processing、其它核心/第三方插件的后台任务共用同一套原生机制，
-  行为对用户来说是一致的、符合预期的
-
-打断（取消）机制：
-- 在裁剪前 / 提交前 / 提交后 / 每一次轮询前后共 4 个“安全点”检查
-  self.isCanceled()，检测到取消立即抛出 TaskCancelledError 终止 run()
-- 提交成功之后如果检测到取消，会尽力调用服务端“取消任务”接口，
-  让服务端也尽早释放算力资源（服务端未实现该接口时静默忽略，不影响本地行为）
-- 轮询等待被拆分为 0.3s 粒度的小睡眠，取消响应延迟不超过约 0.3 秒
-- 触发方式：dockwidget 上的「取消任务」按钮，或 QGIS 原生任务面板里的取消按钮，
-  两者最终都会调用同一个 QgsTask.cancel()
+更新特性：
+- 完美支持单图解译 (分割/目标检测) 与双图解译 (变化检测)
+- 适配 raster_layer_after 参数输入，自动对 T2 影像进行 ROI 裁剪与打包提交
 """
 
 import os
@@ -55,16 +42,17 @@ class InterpretTask(QgsTask):
     # 用户（或 QGIS）主动取消
     taskCancelled = pyqtSignal()
 
-    def __init__(self, raster_layer, extent: QgsRectangle, model_key: str,
+    def __init__(self, raster_layer, extent: QgsRectangle, extent_crs, model_key: str,
                  target_class: str, prompt: str, server_url: str,
                  license_key: str = "TEST_KEY", machine_id: str = "MACHINE_01",
-                 token: str = "",
+                 token: str = "", raster_layer_after=None,
                  poll_interval: float = DEFAULT_POLL_INTERVAL,
                  timeout: int = DEFAULT_TIMEOUT):
         super().__init__(PLUGIN_TASK_DESCRIPTION, TASK_CAN_CANCEL)
-
         self.raster_layer = raster_layer
+        self.raster_layer_after = raster_layer_after
         self.extent = extent
+        self.extent_crs = extent_crs  # 👈 保存画布坐标系
         self.model_key = model_key
         self.target_class = target_class
         self.prompt = prompt
@@ -85,30 +73,41 @@ class InterpretTask(QgsTask):
 
     # -------------------------------------------------------- 工作线程 ----
     def run(self) -> bool:
-        """
-        在 QGIS 任务线程池的某个工作线程中执行，禁止在此直接操作任何 UI 控件。
-        返回 True 表示成功；返回 False 并结合 self.isCanceled() /
-        self.error_message 区分是“失败”还是“被取消”。
-        """
         clipped_path = None
+        clipped_path_after = None
         try:
             self._client = GeoMindApiClient(
                 self.server_url, self.license_key, self.machine_id, token=self.token
             )
 
             self._raise_if_cancelled()
-            self.progressMessage.emit("正在裁剪所选范围的影像...")
+            self.progressMessage.emit("正在裁剪所选范围的 T1 影像...")
+
+            # 👈 传入 self.extent_crs
             clipped_path = clip_raster_to_temp(
-                self.raster_layer, self.extent, f"{os.getpid()}_{id(self)}"
+                self.raster_layer, self.extent, self.extent_crs, f"{os.getpid()}_{id(self)}_t1"
             )
 
-            # 显示裁剪后文件大小，方便判断上传耗时
+            if self.raster_layer_after:
+                self.progressMessage.emit("正在裁剪所选范围的 T2 变化期影像...")
+                # 👈 传入 self.extent_crs，clip_raster_to_temp 会自动把范围转成 T2 图层的坐标系再去裁剪！
+                clipped_path_after = clip_raster_to_temp(
+                    self.raster_layer_after, self.extent, self.extent_crs, f"{os.getpid()}_{id(self)}_t2"
+                )
+
+            # 计算图像大小提示
             clip_size_mb = os.path.getsize(clipped_path) / (1024 * 1024)
             self.progressMessage.emit(
-                f"影像裁剪完成 ({clip_size_mb:.1f} MB)，正在提交任务到云端服务器..."
+                f"影像裁剪完成 ({clip_size_mb:.1f} MB)，正在提交任务到云端网关..."
             )
+
+            # 👈【关键修改】：将单图/双图裁剪路径透传给 client.submit_task
             self._task_id = self._client.submit_task(
-                clipped_path, self.model_key, self.target_class, self.prompt
+                clipped_path,
+                self.model_key,
+                self.target_class,
+                self.prompt,
+                image_after_path=clipped_path_after  # 双图路径传入
             )
 
             self._raise_if_cancelled(notify_server=True)
@@ -124,11 +123,13 @@ class InterpretTask(QgsTask):
             self.error_message = f"{e}\n{traceback.format_exc()}"
             return False
         finally:
+            # 清理临时裁剪文件
             if clipped_path and os.path.exists(clipped_path):
-                try:
-                    os.remove(clipped_path)
-                except OSError:
-                    pass
+                try: os.remove(clipped_path)
+                except OSError: pass
+            if clipped_path_after and os.path.exists(clipped_path_after):
+                try: os.remove(clipped_path_after)
+                except OSError: pass
             if self._client:
                 self._client.close()
 
@@ -136,7 +137,6 @@ class InterpretTask(QgsTask):
         if not self.isCanceled():
             return
         if notify_server and self._task_id and self._client:
-            # 任务已下发到服务端，尽力通知服务端一并停止计算（失败也无所谓）
             self._client.cancel_task(self._task_id)
         raise TaskCancelledError()
 
@@ -149,7 +149,7 @@ class InterpretTask(QgsTask):
             if time.time() - start_time > self.timeout:
                 raise RuntimeError("解译超时：服务器未在规定时间内完成计算")
 
-            info = self._client.get_status(self._task_id)
+            info = self._client.get_status(self._task_id, model_key=self.model_key)
             status = info.get("status")
             message = info.get("message", "运行中...")
             self.progressMessage.emit(f"⏳ [云端进度]: {message}")
@@ -159,14 +159,13 @@ class InterpretTask(QgsTask):
                 content_type = info.get("content_type", "")
                 suffix = ".geojson" if ("geo+json" in content_type or "json" in content_type) else ".tif"
                 local_result_path = os.path.join(tempfile.gettempdir(), f"result_{self._task_id}{suffix}")
-                self._client.download_result(self._task_id, local_result_path)
+                self._client.download_result(self._task_id, local_result_path, model_key=self.model_key)
                 return local_result_path, content_type
 
             elif status == "failed":
                 error_msg = info.get("error_msg", "未知错误")
                 raise RuntimeError(f"服务器端计算失败: {error_msg}")
 
-            # 把一次 poll_interval 拆成小步睡眠，取消响应更灵敏
             self._sleep_with_cancel_check(self.poll_interval)
 
     def _sleep_with_cancel_check(self, seconds: float):
@@ -181,8 +180,7 @@ class InterpretTask(QgsTask):
     # ---------------------------------------------------------- 主线程 ----
     def finished(self, result: bool):
         """
-        QgsTaskManager 保证 finished() 总是在主线程被回调（无论 run() 是
-        正常结束、抛异常、还是被取消），因此这里发信号驱动 UI 是安全的。
+        QgsTaskManager 保证 finished() 总是在主线程被回调。
         """
         if self.isCanceled():
             self.taskCancelled.emit()
@@ -192,6 +190,6 @@ class InterpretTask(QgsTask):
             self.taskFailed.emit(self.error_message or "未知错误")
 
     def cancel(self):
-        """用户点击取消 / QGIS 任务面板取消时触发，实际中断逻辑见 run() 中的检查点。"""
+        """用户点击取消 / QGIS 任务面板取消时触发。"""
         self.progressMessage.emit("正在取消任务，请稍候...")
         super().cancel()

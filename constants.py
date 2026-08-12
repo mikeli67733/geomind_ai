@@ -44,9 +44,12 @@ def fetch_remote_server_url() -> str:
 
 DEFAULT_SERVER_URL = fetch_remote_server_url()
 
+# 找到 MODELS 变量，修改为如下形式：
 MODELS = [
+    ("双期影像变化检测 (CHANGE_DETECTION)", "CHANGE_DETECTION", "change_detection"),
     ("土地利用/多要素识别 (LANDUSE)", "LANDUSE", "landuse"),
     ("SAM3 提示词通用大模型 (SAM3)", "SAM3_MODEL", "sam3"),
+    # ("目标检测 (DETECTION)", "DETECTION", "detection"),
 ]
 
 LANDUSE_CLASSES = [
