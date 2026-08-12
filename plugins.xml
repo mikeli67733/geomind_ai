@@ -1,19 +1,19 @@
 <?xml version = "1.0" encoding = "UTF-8"?>
 <plugins>
-  <pyqgis_plugin name="GeoMind AI" version="2.9" plugin_id="geomind_ai">
+  <pyqgis_plugin name="GeoMind AI" version="3.0" plugin_id="geomind_ai">
     <description><![CDATA[支持SAM3大模型提示词解译及专项地物（水体/耕地/建筑等）自动化提取（需要远程AI服务授权）]]></description>
-    <about><![CDATA[本插件结合SAM3通用遥感大模型与专项语义分割模型，支持输入Prompt或选择分类自动提取。注意：本插件需要连接远程云端算法服务器，请扫码或输入授权Key激活使用。]]></about>
-    <version>2.9</version>
+    <about><![CDATA[本插件结合SAM3通用遥感大模型与专项语义分割、变化检测模型，支持输入Prompt或选择分类自动提取。注意：本插件需要连接远程云端算法服务器，请扫码或输入授权Key激活使用。]]></about>
+    <version>3.0</version>
     <qgis_minimum_version>3.16</qgis_minimum_version>
     <homepage>https://github.com/mikeli67733/geomind_ai</homepage>
     <file_name>geomind_ai.zip</file_name>
     <icon>icon.png</icon>
     <author_name>Mike Li</author_name>
-    <download_url>https://github.com/mikeli67733/geomind_ai/releases/download/v2.9/geomind_ai.zip</download_url>
+    <download_url>https://github.com/mikeli67733/geomind_ai/releases/download/v3.0/geomind_ai.zip</download_url>
     <category>Raster</category>
     <experimental>False</experimental>
     <deprecated>False</deprecated>
-    <changelog><![CDATA[2.3版本：新增SAM3大模型支持与卡密授权校验]]></changelog>
+    <changelog><![CDATA[3.0版本：新增变化检测提取]]></changelog>
     <tags>remote sensing,sam3,ai,interpretation,raster,vector</tags>
   </pyqgis_plugin>
 </plugins>
