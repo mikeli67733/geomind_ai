@@ -3,12 +3,12 @@ name=GeoMind AI
 plugin_id=geomind_ai
 qgisMinimumVersion=3.16
 description=支持SAM3大模型提示词解译及专项地物（水体/耕地/建筑等）自动化提取（需要远程AI服务授权）
-about=本插件结合SAM3通用遥感大模型与专项语义分割模型，支持输入Prompt或选择分类自动提取。注意：本插件需要连接远程云端账号/算法服务器，请先注册账号登录后使用；提供每日5次免费、支付宝包月付费、定制服务/私有化部署三种套餐。
-version=3.0
+about=本插件基于 SAM3 遥感大模型与 AI 算法矩阵，提供“Prompt 交互”与“分类提取”双模式的极速精准解译能力，需登录云端使用，并支持每日 20 次免费体验、月卡会员及私有化/算法定制服务。
+version=3.1
 author=Mike Li
 email=mikeli785857@gmail.com
 
-changelog=3.0版本：解决了一些问题
+changelog=3.1版本：解决了一些问题，新增了带旋转框的目标检测
 
 
 homepage=https://github.com/mikeli67733/geomind_ai
