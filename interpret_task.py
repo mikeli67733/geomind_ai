@@ -5,6 +5,7 @@ InterpretTask：基于 QGIS 原生任务框架 (QgsTask + QgsTaskManager) 实现
 
 更新特性：
 - 完美支持单图解译 (分割/目标检测) 与双图解译 (变化检测)
+- 支持 SAM3 输出类型切换 (mask 图斑 vs bbox 方框)
 - 适配 raster_layer_after 参数输入，自动对 T2 影像进行 ROI 裁剪与打包提交
 """
 
@@ -44,6 +45,7 @@ class InterpretTask(QgsTask):
 
     def __init__(self, raster_layer, extent: QgsRectangle, extent_crs, model_key: str,
                  target_class: str, prompt: str, server_url: str,
+                 output_format: str = "mask",  # 👈 新增：输出类型参数 ('mask' 或 'bbox')
                  license_key: str = "TEST_KEY", machine_id: str = "MACHINE_01",
                  token: str = "", raster_layer_after=None,
                  poll_interval: float = DEFAULT_POLL_INTERVAL,
@@ -52,10 +54,11 @@ class InterpretTask(QgsTask):
         self.raster_layer = raster_layer
         self.raster_layer_after = raster_layer_after
         self.extent = extent
-        self.extent_crs = extent_crs  # 👈 保存画布坐标系
+        self.extent_crs = extent_crs  # 保存画布坐标系
         self.model_key = model_key
         self.target_class = target_class
         self.prompt = prompt
+        self.output_format = output_format  # 👈 存储输出类型
         self.server_url = server_url.rstrip('/')
         self.license_key = license_key
         self.machine_id = machine_id
@@ -83,14 +86,13 @@ class InterpretTask(QgsTask):
             self._raise_if_cancelled()
             self.progressMessage.emit("正在裁剪所选范围的 T1 影像...")
 
-            # 👈 传入 self.extent_crs
+            # 传入 self.extent_crs
             clipped_path = clip_raster_to_temp(
                 self.raster_layer, self.extent, self.extent_crs, f"{os.getpid()}_{id(self)}_t1"
             )
 
             if self.raster_layer_after:
                 self.progressMessage.emit("正在裁剪所选范围的 T2 变化期影像...")
-                # 👈 传入 self.extent_crs，clip_raster_to_temp 会自动把范围转成 T2 图层的坐标系再去裁剪！
                 clipped_path_after = clip_raster_to_temp(
                     self.raster_layer_after, self.extent, self.extent_crs, f"{os.getpid()}_{id(self)}_t2"
                 )
@@ -101,13 +103,14 @@ class InterpretTask(QgsTask):
                 f"影像裁剪完成 ({clip_size_mb:.1f} MB)，正在提交任务到云端网关..."
             )
 
-            # 👈【关键修改】：将单图/双图裁剪路径透传给 client.submit_task
+            # 🚨【关键修改】：透传 output_format 给 client.submit_task
             self._task_id = self._client.submit_task(
                 clipped_path,
                 self.model_key,
                 self.target_class,
                 self.prompt,
-                image_after_path=clipped_path_after  # 双图路径传入
+                image_after_path=clipped_path_after,  # 双图路径传入
+                output_format=self.output_format       # 👈 传入输出格式 ('mask'/'bbox')
             )
 
             self._raise_if_cancelled(notify_server=True)

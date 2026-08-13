@@ -6,7 +6,7 @@
 - 账号与套餐：JWT 登录/注册、每日额度实时显示
 - 动态模型切换：
     1. 土地利用全要素解译 (多类要素复选框)
-    2. SAM3 交互式大模型 (Prompt 提示词输入)
+    2. SAM3 交互式大模型 (Prompt 提示词输入 + 分割/检测框切换)
     3. 双期影像变化检测 (支持 T1 基准期 + T2 变化期双图选择)
     4. 目标检测: 电力铁塔 / 光伏电站 / 通用目标 (单图框选提取)
 - QGIS 原生任务框架 (QgsTask/QgsTaskManager) 异步提交与中途打断
@@ -229,8 +229,18 @@ class ImageInterpretDockWidget(QDockWidget):
         prompt_layout = QVBoxLayout()
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setPlaceholderText("例如: water, building (英文单词描述)")
-        self.prompt_edit.setFixedHeight(55)
+        self.prompt_edit.setFixedHeight(50)
         prompt_layout.addWidget(self.prompt_edit)
+
+        # 🚨【新增】：SAM3 输出类型切换 (分割图斑 vs 检测方框)
+        sam_out_layout = QHBoxLayout()
+        sam_out_layout.addWidget(QLabel("输出形式:"))
+        self.sam_out_type_combo = QComboBox()
+        self.sam_out_type_combo.addItem("矢量分割图斑 (Polygon)", "mask")
+        self.sam_out_type_combo.addItem("目标检测方框 (Bounding Box)", "bbox")
+        sam_out_layout.addWidget(self.sam_out_type_combo)
+        prompt_layout.addLayout(sam_out_layout)
+
         self.prompt_group.setLayout(prompt_layout)
         main_layout.addWidget(self.prompt_group)
 
@@ -519,6 +529,7 @@ class ImageInterpretDockWidget(QDockWidget):
         layer_t2 = None
         prompt = ""
         target_class = ""
+        output_format = "mask"  # 默认输出为分割矢量图斑
 
         # 校验不同模式参数
         if mode == "change_detection":
@@ -537,6 +548,8 @@ class ImageInterpretDockWidget(QDockWidget):
             if not prompt:
                 QMessageBox.warning(self, "提示", "使用 SAM3 模型必须输入提示词 (Prompt)")
                 return
+            # 🚨 获取选择的 SAM3 输出类型 ('mask' 或 'bbox')
+            output_format = self.sam_out_type_combo.currentData() or "mask"
 
         self._save_settings()
 
@@ -548,15 +561,16 @@ class ImageInterpretDockWidget(QDockWidget):
         self._set_running_state(True)
         self.status_label.setText("正在打包影像并提交任务，请稍候...")
 
-        # 启动后台解译任务，将原始 selected_extent 与 canvas_crs 传过去
+        # 启动后台解译任务，透传 output_format
         task = InterpretTask(
             raster_layer=layer_t1,
             raster_layer_after=layer_t2,
-            extent=self.selected_extent,  # 👈 传入原始 selected_extent
-            extent_crs=canvas_crs,  # 👈 新增：传入框选范围对应的 CRS
+            extent=self.selected_extent,
+            extent_crs=canvas_crs,
             model_key=model_key,
             target_class=target_class,
             prompt=prompt,
+            output_format=output_format,  # 👈 传入输出类型 (mask / bbox)
             server_url=server_url,
             machine_id=self.machine_id,
             token=self.token,

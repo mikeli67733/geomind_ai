@@ -8,7 +8,8 @@ GeoMind AI 云端服务 HTTP 客户端。
 
 更新内容：
 1. 增强 submit_task，支持双图 (image + image_after) 打包上传（用于变化检测）
-2. 增强 get_status / download_result，支持带上 model_key 帮助网关精准路由
+2. 增强 submit_task，支持透传 output_format (mask 分割图斑 vs bbox 目标检测方框)
+3. 增强 get_status / download_result，支持带上 model_key 帮助网关精准路由
 """
 
 import os
@@ -53,10 +54,12 @@ class GeoMindApiClient:
     # ------------------------------------------------------------ 提交任务 ---
     def submit_task(self, image_path: str, model_key: str,
                     target_class: str = "", prompt: str = "",
-                    image_after_path: str = None) -> str:
+                    image_after_path: str = None,
+                    output_format: str = "mask") -> str:
         """
         提交解译任务，返回 task_id。
         支持单图提交 (image_path) 或双图提交 (image_path + image_after_path)
+        支持 SAM3/目标检测输出模式 (output_format: 'mask' 或 'bbox')
         """
         from .constants import API_SUBMIT
         url = f"{self.server_url}{API_SUBMIT}"
@@ -64,6 +67,7 @@ class GeoMindApiClient:
             'model_key': model_key,
             'license_key': self.license_key,
             'machine_id': self.machine_id,
+            'output_format': output_format,  # 👈 新增：透传 SAM3 输出格式 ('mask' 或 'bbox')
         }
         if target_class:
             data['target_class'] = target_class
