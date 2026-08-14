@@ -1927,25 +1927,65 @@ class ImageInterpretDockWidget(QDockWidget):
             self.back_btn.setVisible(True)
             self.account_btn.setVisible(True)
 
+    FALLBACK_SERVER_URL = "http://127.0.0.1:8000"
+
+    def get_remote_or_default_url(self, force_refresh: bool = False) -> str:
+        """
+        尽可能获取 remote_url 并做缓存：
+        1. 远程动态拉取 (remote_url)
+        2. 上次成功获取的内存缓存 (_cached_remote_url)
+        3. 静态默认配置 (DEFAULT_SERVER_URL)
+        4. 本地兜底 (FALLBACK_SERVER_URL)
+        """
+        # 如果强制刷新，或者此前尚未缓存成功，则尝试拉取远程地址
+        if force_refresh or not getattr(self, '_cached_remote_url', None):
+            try:
+                if callable(globals().get("fetch_remote_server_url")):
+                    remote = fetch_remote_server_url()
+                    if remote:
+                        self._cached_remote_url = str(remote).strip().rstrip("/")
+            except Exception:
+                pass  # 网络异常时静默失败，走后续兜底
+
+        # 按优先级返回有效地址
+        cached = getattr(self, '_cached_remote_url', None)
+        default_cfg = (DEFAULT_SERVER_URL or "").strip().rstrip("/")
+        return cached or default_cfg or FALLBACK_SERVER_URL
+
     def current_server_url(self) -> str:
-        if hasattr(self, 'account_page') and hasattr(self.account_page, 'server_url_edit'):
-            url = self.account_page.server_url_edit.text().strip()
-            if url:
-                return url
-        saved = self.settings.value(SETTINGS_KEY_SERVER_URL, "")
-        if saved:
-            return str(saved).strip()
-        return DEFAULT_SERVER_URL or "http://127.0.0.1:8000"
+        """
+        获取当前生效的服务器地址：
+        - 仅当明确开启【自定义服务器 (is_custom_server)】时，才使用用户输入/保存的自定义地址
+        - 其余所有情况均尽可能使用 remote_url
+        """
+        is_custom = self.settings.value("is_custom_server", False, type=bool)
+
+        # 1. 只有开启了自定义，才允许使用输入框或保存的自定义配置
+        if is_custom:
+            if hasattr(self, 'account_page') and hasattr(self.account_page, 'server_url_edit'):
+                url = self.account_page.server_url_edit.text().strip().rstrip("/")
+                if url:
+                    return url
+            saved = self.settings.value(SETTINGS_KEY_SERVER_URL, "", type=str).strip().rstrip("/")
+            if saved:
+                return saved
+
+        # 2. 只要未开启自定义，均尽可能使用 remote_url
+        return self.get_remote_or_default_url()
 
     def _load_settings(self):
-        remote_url = fetch_remote_server_url()
+        """加载配置并回填到 UI"""
         is_custom = self.settings.value("is_custom_server", False, type=bool)
-        saved_url = self.settings.value(SETTINGS_KEY_SERVER_URL, "")
-        if is_custom and saved_url:
-            self.account_page.server_url_edit.setText(str(saved_url).strip())
+
+        if is_custom:
+            # 自定义模式：显示保存的自定义 URL
+            target_url = self.settings.value(SETTINGS_KEY_SERVER_URL, "", type=str).strip().rstrip("/")
         else:
-            self.account_page.server_url_edit.setText(
-                str(remote_url or DEFAULT_SERVER_URL or "http://127.0.0.1:8000").strip())
+            # 非自定义模式：强制拉取并使用最新的 remote_url
+            target_url = self.get_remote_or_default_url(force_refresh=True)
+
+        if hasattr(self, 'account_page') and hasattr(self.account_page, 'server_url_edit'):
+            self.account_page.server_url_edit.setText(target_url)
 
     def _try_restore_login(self):
         token = self.settings.value(SETTINGS_KEY_TOKEN, "")
