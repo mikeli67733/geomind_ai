@@ -215,5 +215,30 @@ LLM_TOOLS = [
                 "required": ["layer_t1", "layer_t2"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_geocode_address",
+            "description": "地址地理编码与QGIS画布定位工具。支持国内外地址：【国内地址】仅需提供 address_text，后台将自动调用天地图进行高精度地理编码；【国外/境外地名】（如埃菲尔铁塔、东京塔、纽约时代广场等），请大模型基于自身地理知识库，在调用本工具时一并传入预测的 WGS84 经度(lon)和纬度(lat)。最终在QGIS中生成点矢量图层并居中定位。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "address_text": {
+                        "type": "string",
+                        "description": "地名或地址文本，例如：'北京市海淀区中关村'、'法国巴黎埃菲尔铁塔'"
+                    },
+                    "lon": {
+                        "type": "number",
+                        "description": "目标地点的WGS84经度（浮点数）。国外地名或天地图无数据的地名时，由模型直接推算填入；国内地址可不填。"
+                    },
+                    "lat": {
+                        "type": "number",
+                        "description": "目标地点的WGS84纬度（浮点数）。国外地名或天地图无数据的地名时，由模型直接推算填入；国内地址可不填。"
+                    }
+                },
+                "required": ["address_text"]
+            }
+        }
     }
 ]

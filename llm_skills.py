@@ -8,12 +8,19 @@ import tempfile
 import numpy as np
 from datetime import datetime
 from osgeo import gdal, ogr, osr
+import requests
+import time
 
 from qgis.core import (
-    QgsProject, QgsRasterLayer, QgsVectorLayer, QgsApplication
+    QgsProject, QgsRasterLayer, QgsVectorLayer, QgsApplication, QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY, QgsField, QgsProject
 )
-
-
+from qgis.core import (
+    QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY,
+    QgsProject, QgsField, QgsCoordinateTransform, QgsCoordinateReferenceSystem
+)
+from qgis.utils import iface
+from qgis.PyQt.QtCore import QVariant
+import json
 # =========================================================================
 # 辅助函数
 # =========================================================================
@@ -43,6 +50,121 @@ def get_active_layers() -> str:
 # =========================================================================
 # 一、10 大免费本地遥感全能工具箱
 # =========================================================================
+import json
+import time
+import requests
+from typing import Optional
+from qgis.core import (
+    QgsVectorLayer,
+    QgsField,
+    QgsFeature,
+    QgsGeometry,
+    QgsPointXY,
+    QgsProject,
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform
+)
+from qgis.PyQt.QtCore import QVariant
+
+
+def skill_geocode_address(address_text: str, lon: Optional[float] = None, lat: Optional[float] = None) -> str:
+    """
+    地理编码与地图定位工具（支持国内外地址）：
+    - 国内地址：只需传入 address_text，自动使用天地图高精度解析。
+    - 国外地址/天地图无数据时：请大语言模型基于自身常识知识，在调用时一并传入估算的 WGS84 经度(lon)和纬度(lat)。
+
+    :param address_text: 地点/地址名称（如 "北京市海淀区中关村" 或 "巴黎埃菲尔铁塔"）
+    :param lon: [可选] 经度(WGS84)，国外地址请模型直接提供
+    :param lat: [可选] 纬度(WGS84)，国外地址请模型直接提供
+    :return: 执行状态与定位结果
+    """
+    tk = "7ba1ada42adefb5df42e4a1364b321c4"
+    source_type = "天地图"
+
+    try:
+        if iface is None:
+            return "错误：获取不到QGIS iface对象，无法操作地图画布"
+
+        # -------------------------------------------------------------
+        # 1. 坐标获取逻辑（国外由LLM传入 / 国内调用天地图）
+        # -------------------------------------------------------------
+        if lon is not None and lat is not None:
+            # 模式 A：大模型直接提供了经纬度（适用于国外地点或已知坐标）
+            lon = float(lon)
+            lat = float(lat)
+            source_type = "大模型地理常识估算/国外定位"
+        else:
+            # 模式 B：国内地址，调用天地图 API
+            if not tk or len(tk) < 10:
+                return "天地图tk密钥无效，请检查配置"
+
+            url = "https://api.tianditu.gov.cn/geocoder"
+            ds_data = json.dumps({"keyWord": address_text}, ensure_ascii=False)
+            params = {
+                "ds": ds_data,
+                "tk": tk
+            }
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.tianditu.gov.cn/"
+            }
+
+            time.sleep(0.3)
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+            js = resp.json()
+
+            if js.get("status") != "0":
+                return f"天地图解析失败: {js.get('msg', '未知错误')}。若是国外地址，请直接传入 lon 和 lat 经纬度调用。"
+
+            location = js.get("location")
+            if not location:
+                return (
+                    f"天地图未匹配到国内结果：'{address_text}'（可能为国外地点或生僻地名）。\n"
+                    f"请大语言模型根据自身知识库评估该地点的 WGS84 经度(lon)和纬度(lat)，重新调用此函数。"
+                )
+
+            lon = float(location["lon"])
+            lat = float(location["lat"])
+
+        # -------------------------------------------------------------
+        # 2. 生成 QGIS 内存图层并打点
+        # -------------------------------------------------------------
+        layer_name = f"定位_{address_text[:10]}"
+        vlayer = QgsVectorLayer("Point?crs=EPSG:4326", layer_name, "memory")
+        prov = vlayer.dataProvider()
+        prov.addAttributes([
+            QgsField("address", QVariant.String),
+            QgsField("lon", QVariant.Double),
+            QgsField("lat", QVariant.Double),
+            QgsField("source", QVariant.String)
+        ])
+        vlayer.updateFields()
+
+        feat = QgsFeature()
+        feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(lon, lat)))
+        feat.setAttributes([address_text, lon, lat, source_type])
+        prov.addFeature(feat)
+        vlayer.updateExtents()
+        QgsProject.instance().addMapLayer(vlayer)
+
+        # -------------------------------------------------------------
+        # 3. 画布坐标系转换并跳转定位
+        # -------------------------------------------------------------
+        canvas = iface.mapCanvas()
+        point_4326 = QgsPointXY(lon, lat)
+        src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+        dest_crs = canvas.mapSettings().destinationCrs()
+        transform = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+        canvas_point = transform.transform(point_4326)
+
+        canvas.setCenter(canvas_point)
+        canvas.zoomScale(50000)
+        canvas.refresh()
+
+        return f"地址定位完成 [{source_type}]：{address_text} (经度={lon:.6f}, 纬度={lat:.6f})，画布已跳转。"
+
+    except Exception as e:
+        return f"地址解析/定位失败: {str(e)}"
 
 def skill_calc_spectral_index(layer_name: str, index_type: str, b1_idx: int, b2_idx: int, b3_idx: int = 1) -> str:
     """1. 光谱指数计算 (NDVI, GNDVI, EVI, NDWI 等)"""
@@ -347,6 +469,7 @@ def skill_raster_polygonize(layer_name: str, sieve_size: int = 4) -> str:
         return "栅格已成功转换为矢量多边形图斑（并滤除孤立碎斑）。"
     except Exception as e:
         return f"矢量化失败: {e}"
+
 
 
 # =========================================================================

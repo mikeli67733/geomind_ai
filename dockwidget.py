@@ -1979,7 +1979,7 @@ class LlmCopilotWidget(QWidget):
             skill_dem_analysis, skill_spatial_filter, skill_area_statistics,
             skill_vector_smooth, skill_kmeans_cluster, skill_raster_diff,
             skill_image_enhance, skill_raster_polygonize,
-            skill_ai_extract_feature, skill_ai_sam3_extract, skill_ai_change_detection
+            skill_ai_extract_feature, skill_ai_sam3_extract, skill_ai_change_detection,skill_geocode_address
         )
 
         server_url = self.dock.current_server_url()
@@ -2008,6 +2008,8 @@ class LlmCopilotWidget(QWidget):
             return skill_image_enhance(**args)
         elif fn_name == "skill_raster_polygonize":
             return skill_raster_polygonize(**args)
+        elif fn_name == "skill_geocode_address":
+            return skill_geocode_address(**args)
 
         # AI 云端模型请求
         elif fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
