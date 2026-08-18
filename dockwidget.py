@@ -19,7 +19,7 @@ from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QComboBox, QPushButton, QTextEdit, QLineEdit, QProgressBar, QMessageBox,
     QGroupBox, QCheckBox, QApplication, QToolButton, QStackedWidget, QScrollArea,
-    QFrame, QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QHeaderView
+    QFrame, QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QHeaderView,QFormLayout
 )
 from qgis.core import (
     QgsProject, QgsMapLayerProxyModel, QgsRasterLayer, QgsVectorLayer,
@@ -39,6 +39,12 @@ from .constants import (
     SETTINGS_KEY_SERVER_URL, SETTINGS_KEY_TOKEN, SETTINGS_KEY_USERNAME,
     PLAN_LABELS, FREE_PLAN_DAILY_QUOTA, fetch_remote_server_url
 )
+from qgis.core import QgsApplication
+from .llm_agent import LlmApiTask
+from .constants import (
+    SETTINGS_KEY_LLM_API_KEY, SETTINGS_KEY_LLM_BASE_URL, SETTINGS_KEY_LLM_MODEL,
+    DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL,find_class_ids_by_keywords, get_model_key_by_mode
+)
 
 # 栅格与矢量图层过滤器枚举兼容
 RASTER_LAYER_FILTER = getattr(QgsMapLayerProxyModel, 'RasterLayer', None)
@@ -55,15 +61,6 @@ if VECTOR_LAYER_FILTER is None:
     except AttributeError:
         VECTOR_LAYER_FILTER = QgsMapLayerProxyModel.Filter.Vector
 
-
-def get_model_key_by_mode(target_mode: str, fallback_key: str = "") -> str:
-    """动态从 constants.MODELS 中查找后端真实支持的 model_key"""
-    for item in MODELS:
-        if len(item) >= 3 and item[2] == target_mode:
-            return item[1]
-    if MODELS and len(MODELS[0]) >= 2:
-        return MODELS[0][1]
-    return fallback_key
 
 
 def find_class_ids_by_keywords(keywords: list, fallback_id: str = "") -> str:
@@ -1580,6 +1577,25 @@ class AccountSettingsPage(QWidget):
         server_group = QGroupBox("网络与网关设置")
         server_layout = QVBoxLayout(server_group)
 
+        # ======== 新增 LLM 设置 ========
+        llm_group = QGroupBox("大模型 (Copilot) API 设置")
+        llm_layout = QFormLayout(llm_group)
+
+        self.llm_url_edit = QLineEdit(self.dock.settings.value(SETTINGS_KEY_LLM_BASE_URL, DEFAULT_LLM_BASE_URL))
+        self.llm_model_edit = QLineEdit(self.dock.settings.value(SETTINGS_KEY_LLM_MODEL, DEFAULT_LLM_MODEL))
+        self.llm_key_edit = QLineEdit(self.dock.settings.value(SETTINGS_KEY_LLM_API_KEY, ""))
+        self.llm_key_edit.setEchoMode(QLineEdit.Password)
+
+        llm_layout.addRow("API Base URL:", self.llm_url_edit)
+        llm_layout.addRow("模型名称 (Model):", self.llm_model_edit)
+        llm_layout.addRow("API Key:", self.llm_key_edit)
+
+        save_llm_btn = QPushButton("💾 保存大模型配置")
+        save_llm_btn.clicked.connect(self._save_llm_settings)
+        llm_layout.addWidget(save_llm_btn)
+
+        layout.addWidget(llm_group)
+
         notice_banner = QLabel("🌸 提示：若遇到连接超时或解译报错，可点击【🔄 刷新网关】同步最新通道。")
         notice_banner.setObjectName("noticeBanner")
         notice_banner.setWordWrap(True)
@@ -1604,6 +1620,12 @@ class AccountSettingsPage(QWidget):
 
         layout.addWidget(server_group)
         layout.addStretch()
+
+    def _save_llm_settings(self):
+        self.dock.settings.setValue(SETTINGS_KEY_LLM_BASE_URL, self.llm_url_edit.text().strip())
+        self.dock.settings.setValue(SETTINGS_KEY_LLM_MODEL, self.llm_model_edit.text().strip())
+        self.dock.settings.setValue(SETTINGS_KEY_LLM_API_KEY, self.llm_key_edit.text().strip())
+        QMessageBox.information(self, "成功", "大模型 Copilot 配置已保存！")
 
     def update_account_ui(self, token, username, account_info):
         if not token:
@@ -1665,12 +1687,13 @@ class TaskCardButton(QPushButton):
     def __init__(self, icon_str: str, title: str, subtitle: str, is_free: bool = False, parent=None):
         super().__init__(parent)
         self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(56)
         self.setStyleSheet("""
             QPushButton {
                 background-color: #ffffff;
                 border: 1px solid #e2e8f0;
                 border-radius: 8px;
-                padding: 10px;
+                padding: 6px;
                 text-align: left;
             }
             QPushButton:hover {
@@ -1679,40 +1702,40 @@ class TaskCardButton(QPushButton):
             }
         """)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 3, 6, 3)
-        layout.setSpacing(10)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(8)
 
         lbl_icon = QLabel(icon_str)
-        lbl_icon.setStyleSheet("font-size: 22px; border: none; background: transparent;")
+        lbl_icon.setStyleSheet("font-size: 18px; border: none; background: transparent;")
         layout.addWidget(lbl_icon)
 
         text_layout = QVBoxLayout()
-        text_layout.setSpacing(2)
+        text_layout.setSpacing(1)
 
         title_row = QHBoxLayout()
         lbl_title = QLabel(title)
         lbl_title.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #1e293b; border: none; background: transparent;")
+            "font-size: 12px; font-weight: bold; color: #1e293b; border: none; background: transparent;")
         title_row.addWidget(lbl_title)
 
         if is_free:
             lbl_badge = QLabel("免费")
             lbl_badge.setStyleSheet(
-                "font-size: 10px; color: #16a34a; background-color: #dcfce7; border-radius: 4px; padding: 1px 4px; font-weight: bold;")
+                "font-size: 9px; color: #16a34a; background-color: #dcfce7; border-radius: 4px; padding: 0px 3px; font-weight: bold;")
             title_row.addWidget(lbl_badge)
         title_row.addStretch()
         text_layout.addLayout(title_row)
 
         lbl_sub = QLabel(subtitle)
-        lbl_sub.setStyleSheet("font-size: 11px; color: #64748b; border: none; background: transparent;")
+        lbl_sub.setWordWrap(True)
+        lbl_sub.setStyleSheet("font-size: 10px; color: #64748b; border: none; background: transparent;")
         text_layout.addWidget(lbl_sub)
 
-        layout.addLayout(text_layout)
-        layout.addStretch()
+        layout.addLayout(text_layout, stretch=1)
 
         arrow = QLabel("›")
         arrow.setStyleSheet(
-            "font-size: 18px; color: #94a3b8; font-weight: bold; border: none; background: transparent;")
+            "font-size: 16px; color: #94a3b8; font-weight: bold; border: none; background: transparent;")
         layout.addWidget(arrow)
 
 
@@ -1726,54 +1749,326 @@ class HomePage(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
-        # ---------------- 分组 1: 本地免费遥感全能工具箱 ----------------
+        self.copilot_btn = QPushButton("✨ GeoMind AI Copilot (自然语言驱动大模型指令)")
+        self.copilot_btn.setStyleSheet("""
+                            QPushButton {
+                                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1e3a8a, stop:1 #3b82f6);
+                                color: white; font-weight: bold; font-size: 13px; border-radius: 8px; padding: 10px;
+                            }
+                            QPushButton:hover { background: #1d4ed8; }
+                        """)
+        self.copilot_btn.clicked.connect(lambda: self.taskSelected.emit("task_copilot"))
+        layout.addWidget(self.copilot_btn)
+
         lbl_group_free = QLabel("🎈 本地免费遥感全能工具箱 (0额度 / 免联网 / 极速)")
-        lbl_group_free.setStyleSheet("font-weight: bold; color: #047857; font-size: 13px; margin-top: 4px;")
+        lbl_group_free.setStyleSheet("font-weight: bold; color: #047857; font-size: 12px; margin-top: 2px;")
         layout.addWidget(lbl_group_free)
 
         free_cards = [
-            ("🍀", "全能遥感光谱指数库", "NDVI / GNDVI / EVI / SAVI / FVC / NDWI / BSI 等10+指数", True, "task_spectral_index"),
-            ("🔮", "遥感 PCA 主成分分析", "多波段正交变换，去除冗余生成 PC1/PC2/PC3", True, "task_pca"),
-            ("🗻", "DEM 地形全要素分析", "山体阴影(Hillshade) / 坡度 / 坡向 / 起伏度(TRI)", True, "task_dem"),
-            ("🔎", "空间滤波与边缘提取", "Sobel 道路/建筑边界提取 + 高斯降噪 + 高通锐化", True, "task_filter"),
-            ("🍰", "地物分类面积统计报表", "一键统计分类各类别像元总数、面积与亩数", True, "task_area"),
-            ("🎀", "矢量图斑化简与平滑", "Douglas-Peucker 边界精修，消除锯齿边", True, "task_vector_smooth"),
-            ("🍭", "K-Means 智能无监督聚类", "多波段自动聚类，快速划分地物类别图斑", True, "task_kmeans"),
-            ("🐣", "双期像元差分变化检测", "两期影像绝对差分比对 + 自动矢量化提取", True, "task_raster_diff"),
-            ("🌈", "假彩色合成与画质增强", "波段假彩色合成 + 2% 动态对比度拉伸", True, "task_enhance"),
-            ("🧩", "栅格一键矢量化与过滤", "二值掩膜直接生成矢量图斑 + 椒盐碎斑过滤", True, "task_polygonize"),
+            ("🍀", "全能遥感光谱指数库", "NDVI/GNDVI/EVI/SAVI/FVC/NDWI/BSI 等10+", True, "task_spectral_index"),
+            ("🔮", "遥感 PCA 主成分分析", "多波段正交变换，去冗余生成PC1/2/3", True, "task_pca"),
+            ("🗻", "DEM 地形全要素分析", "山体阴影/坡度/坡向/起伏度(TRI)", True, "task_dem"),
+            ("🔎", "空间滤波与边缘提取", "Sobel边界提取+高斯降噪+高通锐化", True, "task_filter"),
+            ("🍰", "地物分类面积统计报表", "一键统计各类别像元数、面积与亩数", True, "task_area"),
+            ("🎀", "矢量图斑化简与平滑", "边界精修，消除锯齿边", True, "task_vector_smooth"),
+            ("🍭", "K-Means 智能无监督聚类", "多波段自动聚类，划分地物类别", True, "task_kmeans"),
+            ("🐣", "双期像元差分变化检测", "两期影像绝对差分比对+矢量化", True, "task_raster_diff"),
+            ("🌈", "假彩色合成与画质增强", "波段合成+2%动态对比度拉伸", True, "task_enhance"),
+            ("🧩", "栅格一键矢量化与过滤", "掩膜生成矢量图斑+碎斑过滤", True, "task_polygonize"),
         ]
 
-        for icon, title, desc, is_free, key in free_cards:
+        free_grid = QGridLayout()
+        free_grid.setHorizontalSpacing(6)
+        free_grid.setVerticalSpacing(6)
+        for i, (icon, title, desc, is_free, key) in enumerate(free_cards):
             btn = TaskCardButton(icon, title, desc, is_free=is_free)
             btn.clicked.connect(lambda checked=False, k=key: self.taskSelected.emit(k))
-            layout.addWidget(btn)
+            free_grid.addWidget(btn, i // 2, i % 2)
+        layout.addLayout(free_grid)
 
-        # ---------------- 分组 2: AI 深度解译大模型 ----------------
         lbl_group_ai = QLabel("🧠 AI 深度学习专项解译大模型")
-        lbl_group_ai.setStyleSheet("font-weight: bold; color: #1e3a8a; font-size: 13px; margin-top: 10px;")
+        lbl_group_ai.setStyleSheet("font-weight: bold; color: #1e3a8a; font-size: 12px; margin-top: 6px;")
         layout.addWidget(lbl_group_ai)
 
         ai_cards = [
             ("🌻", "土地利用全要素综合解译", "全要素语义分割大模型", False, "task_landuse_multi"),
-            ("🏡", "建筑物专项提取", "城镇与乡村建筑轮廓高精度提取", False, "task_building"),
-            ("🚗", "道路交通专项提取", "公路、街道与主干交通网络智能提取", False, "task_road"),
-            ("🐬", "水系水体专项提取", "河流、湖泊、水库及池塘边界提取", False, "task_water"),
-            ("🍄", "林草植被专项提取", "林地、灌木与草地覆盖提取", False, "task_vegetation"),
-            ("🥕", "农田耕地专项提取", "大范围耕地与农田图斑智能勾画", False, "task_farmland"),
-            ("🌟", "SAM3 交互提示解译", "输入英文 Prompt 提示词智能提取", False, "task_sam3"),
-            ("🐥", "深度双期影像变化检测", "AI 深度模型两期时相特征比对", False, "task_change"),
+            ("🏡", "建筑物专项提取", "城镇与乡村建筑轮廓提取", False, "task_building"),
+            ("🚗", "道路交通专项提取", "公路街道主干路网提取", False, "task_road"),
+            ("🐬", "水系水体专项提取", "河流湖泊水库池塘边界提取", False, "task_water"),
+            ("🍄", "林草植被专项提取", "林地灌木草地覆盖提取", False, "task_vegetation"),
+            ("🥕", "农田耕地专项提取", "耕地与农田图斑智能勾画", False, "task_farmland"),
+            ("🌟", "SAM3 交互提示解译", "英文Prompt提示词智能提取", False, "task_sam3"),
+            ("🐥", "深度双期影像变化检测", "AI两期时相特征比对", False, "task_change"),
         ]
 
-        for icon, title, desc, is_free, key in ai_cards:
+        ai_grid = QGridLayout()
+        ai_grid.setHorizontalSpacing(6)
+        ai_grid.setVerticalSpacing(6)
+        for i, (icon, title, desc, is_free, key) in enumerate(ai_cards):
             btn = TaskCardButton(icon, title, desc, is_free=is_free)
             btn.clicked.connect(lambda checked=False, k=key: self.taskSelected.emit(k))
-            layout.addWidget(btn)
+            ai_grid.addWidget(btn, i // 2, i % 2)
+        layout.addLayout(ai_grid)
 
         layout.addStretch()
 
+
+from .llm_agent import LlmApiTask
+from .llm_tools_schema import LLM_TOOLS
+import json
+import traceback
+
+
+class LlmCopilotWidget(QWidget):
+    """AI Copilot 对话交互窗口"""
+
+    def __init__(self, main_dock, parent=None):
+        super().__init__(parent)
+        self.dock = main_dock
+        self.chat_history = []
+        self._llm_task = None
+        self._active_ai_task = None
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.history_browser = QTextEdit()
+        self.history_browser.setReadOnly(True)
+        self.history_browser.setStyleSheet(
+            "background-color: #f8fafc; font-size: 13px; border: 1px solid #e2e8f0; border-radius: 6px; padding: 5px;")
+        self.history_browser.append("<b>🤖 GeoMind Copilot</b>: 你好！我是你的智能遥感分析助手。<br>"
+                                    "<i>提示：我会实时展示我的思考过程和错误日志，方便你了解我在做什么。</i>")
+        layout.addWidget(self.history_browser)
+
+        input_layout = QHBoxLayout()
+        self.input_edit = QLineEdit()
+        self.input_edit.setPlaceholderText("请输入自然语言指令 (按回车发送)...")
+        self.input_edit.returnPressed.connect(self._send_msg)
+        input_layout.addWidget(self.input_edit)
+
+        self.send_btn = QPushButton("🚀 发送指令")
+        self.send_btn.setStyleSheet("background-color: #2563eb; color: white; font-weight: bold; border-radius: 6px;")
+        self.send_btn.clicked.connect(self._send_msg)
+        input_layout.addWidget(self.send_btn)
+
+        layout.addLayout(input_layout)
+
+    def _send_msg(self):
+        text = self.input_edit.text().strip()
+        if not text: return
+
+        api_key = self.dock.settings.value(SETTINGS_KEY_LLM_API_KEY, "")
+        if not api_key:
+            QMessageBox.warning(self, "未配置 API Key", "请先在【设置】页面填写您的 LLM API Key")
+            self.dock.show_account_page()
+            return
+
+        self.input_edit.clear()
+        self.history_browser.append(f"<br><b style='color:#0f766e'>🧑‍💻 你:</b> {text}")
+        self.send_btn.setEnabled(False)
+        self.send_btn.setText("AI 思考中...")
+
+        self.chat_history.append({"role": "user", "content": text})
+        self._request_llm(with_tools=True)
+
+    def _request_llm(self, with_tools=False):
+        """向 LLM 发起异步请求"""
+        try:
+            base_url = self.dock.settings.value(SETTINGS_KEY_LLM_BASE_URL, DEFAULT_LLM_BASE_URL)
+            model = self.dock.settings.value(SETTINGS_KEY_LLM_MODEL, DEFAULT_LLM_MODEL)
+            api_key = self.dock.settings.value(SETTINGS_KEY_LLM_API_KEY, "")
+
+            payload = {
+                "model": model,
+                "messages": [{"role": "system", "content": "你是一个内置于 QGIS 的遥感分析助手，请尽量调用工具来处理地图图层。"}] + self.chat_history
+            }
+            if with_tools:
+                payload["tools"] = LLM_TOOLS
+                payload["tool_choice"] = "auto"
+
+            self.history_browser.append(
+                f"<i style='color:#94a3b8; font-size:11px'>💡 [本地进程]: 正在初始化大模型 ({model})...</i>")
+
+            task = LlmApiTask(payload, base_url, api_key)
+            task.apiFinished.connect(self._on_api_finished)
+            task.apiError.connect(self._on_api_error)
+            task.apiProgress.connect(self._on_api_progress)  # 接收思考进度
+            self._llm_task = task
+            QgsApplication.taskManager().addTask(task)
+        except Exception as e:
+            self.history_browser.append(f"<br><b style='color:red'>❌ 构建请求失败:</b> {str(e)}")
+            self._reset_btn()
+
+    def _on_api_progress(self, msg: str):
+        """将后台进度实时打到聊天框上"""
+        self.history_browser.append(f"<i style='color:#94a3b8; font-size:11px'>💡 [通信进度]: {msg}</i>")
+        self.history_browser.verticalScrollBar().setValue(self.history_browser.verticalScrollBar().maximum())
+
+    def _on_api_finished(self, response_message: dict):
+        """主线程回调：安全地执行本地 QGIS 图层操作"""
+        try:
+            # 1. 尝试展示模型深度思考过程 (兼容 DeepSeek R1 reasoning_content)
+            reasoning = response_message.get("reasoning_content", "")
+            if reasoning:
+                self.history_browser.append(
+                    f"<div style='color:#64748b; font-size:11px; border-left: 2px solid #cbd5e1; padding-left: 5px; margin: 5px 0;'>🤔 <b>模型推理过程:</b><br>{reasoning.replace(chr(10), '<br>')}</div>")
+
+            # 2. 检查是否调用了工具
+            if "tool_calls" in response_message and response_message["tool_calls"]:
+                self.chat_history.append(response_message)
+
+                for tool_call in response_message["tool_calls"]:
+                    fn_name = tool_call["function"]["name"]
+                    args_str = tool_call["function"]["arguments"]
+                    self.history_browser.append(
+                        f"<i style='color:#059669; font-size:12px'>🔧 [触发技能]: <b>{fn_name}</b> (参数: {args_str})</i>")
+                    QApplication.processEvents()  # 刷新UI
+
+                    try:
+                        args = json.loads(args_str)
+                        res = self._execute_local_skill(fn_name, args)
+                    except Exception as e:
+                        res = f"工具内部报错: {str(e)}"
+
+                    self.history_browser.append(f"<i style='color:#059669; font-size:12px'>✅ [执行结果]: {res}</i>")
+
+                    self.chat_history.append({
+                        "tool_call_id": tool_call["id"],
+                        "role": "tool",
+                        "name": fn_name,
+                        "content": res
+                    })
+
+                # 拿着结果发给AI要求总结
+                self.history_browser.append(
+                    "<i style='color:#94a3b8; font-size:11px'>💡 [本地进程]: 技能执行完毕，请求 AI 总结报告...</i>")
+                self._request_llm(with_tools=False)
+
+            else:
+                # 3. 正常文字对话返回
+                reply = response_message.get("content", "")
+                if not reply: reply = "(空消息)"
+
+                self.chat_history.append({"role": "assistant", "content": reply})
+                self.history_browser.append(f"<br><b>🤖 Copilot:</b> {reply.replace(chr(10), '<br>')}")
+                self._reset_btn()
+
+        except Exception as e:
+            self.history_browser.append(f"<br><b style='color:red'>❌ 解析 AI 响应时出错:</b> {str(e)}")
+            self.history_browser.append(f"<pre style='font-size:10px'>{traceback.format_exc()}</pre>")
+            self._reset_btn()
+
+    def _on_api_error(self, err_msg: str):
+        self.history_browser.append(f"<br><b style='color:red'>❌ 无法获取 AI 回复:</b> {err_msg}")
+        self._reset_btn()
+
+    def _reset_btn(self):
+        self.send_btn.setEnabled(True)
+        self.send_btn.setText("🚀 发送指令")
+        self._llm_task = None
+        self.history_browser.verticalScrollBar().setValue(self.history_browser.verticalScrollBar().maximum())
+
+    def _execute_local_skill(self, fn_name: str, args: dict) -> str:
+        """主线程执行地物计算与 AI 任务路由"""
+        from .llm_skills import (
+            get_active_layers, skill_calc_spectral_index, skill_run_pca,
+            skill_dem_analysis, skill_spatial_filter, skill_area_statistics,
+            skill_vector_smooth, skill_kmeans_cluster, skill_raster_diff,
+            skill_image_enhance, skill_raster_polygonize,
+            skill_ai_extract_feature, skill_ai_sam3_extract, skill_ai_change_detection
+        )
+
+        server_url = self.dock.current_server_url()
+        token = self.dock.token
+        machine_id = self.dock.machine_id
+
+        if fn_name == "get_active_layers":
+            return get_active_layers()
+        elif fn_name == "skill_calc_spectral_index":
+            return skill_calc_spectral_index(**args)
+        elif fn_name == "skill_run_pca":
+            return skill_run_pca(**args)
+        elif fn_name == "skill_dem_analysis":
+            return skill_dem_analysis(**args)
+        elif fn_name == "skill_spatial_filter":
+            return skill_spatial_filter(**args)
+        elif fn_name == "skill_area_statistics":
+            return skill_area_statistics(**args)
+        elif fn_name == "skill_vector_smooth":
+            return skill_vector_smooth(**args)
+        elif fn_name == "skill_kmeans_cluster":
+            return skill_kmeans_cluster(**args)
+        elif fn_name == "skill_raster_diff":
+            return skill_raster_diff(**args)
+        elif fn_name == "skill_image_enhance":
+            return skill_image_enhance(**args)
+        elif fn_name == "skill_raster_polygonize":
+            return skill_raster_polygonize(**args)
+
+        # AI 云端模型请求
+        elif fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
+            canvas = self.dock.canvas
+            extent = canvas.extent()
+            extent_crs = canvas.mapSettings().destinationCrs()
+
+            try:
+                if fn_name == "skill_ai_extract_feature":
+                    task = skill_ai_extract_feature(
+                        args.get("layer_name"), args.get("feature_type"),
+                        server_url, token, machine_id, extent=extent, extent_crs=extent_crs
+                    )
+                elif fn_name == "skill_ai_sam3_extract":
+                    task = skill_ai_sam3_extract(
+                        args.get("layer_name"), args.get("prompt"), args.get("output_format"),
+                        server_url, token, machine_id, extent=extent, extent_crs=extent_crs
+                    )
+                else:
+                    task = skill_ai_change_detection(
+                        args.get("layer_t1"), args.get("layer_t2"),
+                        server_url, token, machine_id, extent=extent, extent_crs=extent_crs
+                    )
+            except Exception as e:
+                return f"提交云端任务失败: {e}"
+
+            self._active_ai_task = task
+            task.progressMessage.connect(
+                lambda msg: self.history_browser.append(f"<i style='color:#94a3b8;font-size:11px'>⏳ [云端进度]: {msg}</i>")
+            )
+            task.taskSucceeded.connect(self._on_ai_task_ok)
+            task.taskFailed.connect(self._on_ai_task_error)
+            task.taskCancelled.connect(
+                lambda: self.history_browser.append("<i style='color:#dc2626'>⚠️ 云端任务已取消</i>")
+            )
+            QgsApplication.taskManager().addTask(task)
+            return "已成功向云端投递提取任务，正在后台处理，完成后会自动加载结果图层。"
+
+        else:
+            return f"找不到该工具函数: {fn_name}"
+
+    def _on_ai_task_ok(self, result_path, content_type):
+        from datetime import datetime
+        layer_name = f"AI解译结果({datetime.now().strftime('%H:%M:%S')})"
+        if result_path.endswith('.tif'):
+            new_layer = QgsRasterLayer(result_path, layer_name)
+        else:
+            new_layer = QgsVectorLayer(result_path, layer_name, "ogr")
+
+        if new_layer.isValid():
+            QgsProject.instance().addMapLayer(new_layer)
+            self.history_browser.append(f"<b style='color:#16a34a'>✅ 云端任务完成，已加载图层: {layer_name}</b>")
+        else:
+            self.history_browser.append("<b style='color:red'>❌ 结果图层加载失败</b>")
+        self._active_ai_task = None
+        self.history_browser.verticalScrollBar().setValue(self.history_browser.verticalScrollBar().maximum())
+
+    def _on_ai_task_error(self, err_msg):
+        self.history_browser.append(f"<b style='color:red'>❌ 云端任务失败:</b> {err_msg}")
+        self._active_ai_task = None
+        self.history_browser.verticalScrollBar().setValue(self.history_browser.verticalScrollBar().maximum())
 
 # =========================================================================
 # 六、 顶层主停靠面板容器 (ImageInterpretDockWidget)
@@ -1795,6 +2090,7 @@ class ImageInterpretDockWidget(QDockWidget):
         self._build_ui()
         self._load_settings()
         self._try_restore_login()
+        self.task_pages["task_copilot"] = ("✨ AI Copilot 智能助手", self.stack.addWidget(LlmCopilotWidget(self)))
 
     def _build_ui(self):
         container = QWidget()

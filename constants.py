@@ -104,3 +104,30 @@ PLAN_LABELS = {
     "pro": "包月会员 (PRO)",
     "custom": "定制版/私有化部署",
 }
+# ====== 在 constants.py 尾部追加 ======
+SETTINGS_KEY_LLM_API_KEY = "llm_api_key"
+SETTINGS_KEY_LLM_BASE_URL = "llm_base_url"
+SETTINGS_KEY_LLM_MODEL = "llm_model"
+
+DEFAULT_LLM_BASE_URL = "https://api.deepseek.com" # 可以默认用 Deepseek，性价比高
+DEFAULT_LLM_MODEL = "deepseek-v4-flash"
+# ====== 关键词 -> 类别ID 动态查找 ======
+def find_class_ids_by_keywords(keywords: list, fallback_id: str = "") -> str:
+    """
+    根据关键词从 LANDUSE_CLASSES 中动态查找对应的类别 ID
+    """
+    matched = []
+    for label, cls_id in LANDUSE_CLASSES:
+        for kw in keywords:
+            if kw in label:
+                matched.append(str(cls_id))
+                break
+    return ",".join(matched) if matched else fallback_id
+def get_model_key_by_mode(target_mode: str, fallback_key: str = "") -> str:
+    """动态从 MODELS 中查找后端真实支持的 model_key"""
+    for item in MODELS:
+        if len(item) >= 3 and item[2] == target_mode:
+            return item[1]
+    if MODELS and len(MODELS[0]) >= 2:
+        return MODELS[0][1]
+    return fallback_key
