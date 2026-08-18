@@ -174,12 +174,12 @@ LLM_TOOLS = [
         "type": "function",
         "function": {
             "name": "skill_ai_extract_feature",
-            "description": "向云端投递 AI 大模型解译任务，可以提取特定地物（建筑、水体、道路、林草、耕地）。",
+            "description": "向云端投递 AI 大模型解译任务，可以提取特定地物（建筑、水体、道路、林地、草地、耕地、施工）。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "layer_name": {"type": "string"},
-                    "feature_type": {"type": "string", "enum": ["建筑", "水体", "道路", "林草", "耕地", "土地利用"]}
+                    "feature_type": {"type": "string", "enum": ["建筑", "水体", "道路", "林地", "草地","耕地", "施工"]}
                 },
                 "required": ["layer_name", "feature_type"]
             }
