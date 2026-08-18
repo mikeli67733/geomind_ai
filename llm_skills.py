@@ -79,7 +79,7 @@ def skill_geocode_address(address_text: str, lon: Optional[float] = None, lat: O
     :return: 执行状态与定位结果
     """
     tk = "7ba1ada42adefb5df42e4a1364b321c4"
-    source_type = "天地图"
+    source_type = "请查看"
 
     try:
         if iface is None:
