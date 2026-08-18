@@ -155,7 +155,7 @@ class InterpretTask(QgsTask):
             info = self._client.get_status(self._task_id, model_key=self.model_key)
             status = info.get("status")
             message = info.get("message", "运行中...")
-            self.progressMessage.emit(f"⏳ [云端进度]: {message}")
+            self.progressMessage.emit(message)
 
             if status == "completed":
                 self.progressMessage.emit("解译完成，正在下载结果图层...")
