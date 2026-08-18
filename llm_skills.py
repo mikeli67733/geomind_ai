@@ -79,7 +79,7 @@ def skill_geocode_address(address_text: str, lon: Optional[float] = None, lat: O
     :return: 执行状态与定位结果
     """
     tk = "7ba1ada42adefb5df42e4a1364b321c4"
-    source_type = "请查看"
+    source_type = "天地图"
 
     try:
         if iface is None:
@@ -96,7 +96,7 @@ def skill_geocode_address(address_text: str, lon: Optional[float] = None, lat: O
         else:
             # 模式 B：国内地址，调用天地图 API
             if not tk or len(tk) < 10:
-                return "天地图tk密钥无效，请检查配置"
+                return "地图tk密钥无效，请检查配置"
 
             url = "https://api.tianditu.gov.cn/geocoder"
             ds_data = json.dumps({"keyWord": address_text}, ensure_ascii=False)
@@ -114,12 +114,12 @@ def skill_geocode_address(address_text: str, lon: Optional[float] = None, lat: O
             js = resp.json()
 
             if js.get("status") != "0":
-                return f"天地图解析失败: {js.get('msg', '未知错误')}。若是国外地址，请直接传入 lon 和 lat 经纬度调用。"
+                return f"地图解析失败: {js.get('msg', '未知错误')}。若是国外地址，请直接传入 lon 和 lat 经纬度调用。"
 
             location = js.get("location")
             if not location:
                 return (
-                    f"天地图未匹配到国内结果：'{address_text}'（可能为国外地点或生僻地名）。\n"
+                    f"地图未匹配到国内结果：'{address_text}'（可能为国外地点或生僻地名）。\n"
                     f"请大语言模型根据自身知识库评估该地点的 WGS84 经度(lon)和纬度(lat)，重新调用此函数。"
                 )
 
@@ -161,7 +161,7 @@ def skill_geocode_address(address_text: str, lon: Optional[float] = None, lat: O
         canvas.zoomScale(50000)
         canvas.refresh()
 
-        return f"地址定位完成 [{source_type}]：{address_text} (经度={lon:.6f}, 纬度={lat:.6f})，画布已跳转。"
+        return f"地址定位完成：{address_text} (经度={lon:.6f}, 纬度={lat:.6f})，画布已跳转。"
 
     except Exception as e:
         return f"地址解析/定位失败: {str(e)}"
