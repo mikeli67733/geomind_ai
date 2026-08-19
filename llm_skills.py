@@ -533,3 +533,160 @@ def skill_ai_change_detection(layer_t1: str, layer_t2: str, server_url: str, tok
         server_url=server_url, machine_id=machine_id, token=token
     )
     return task
+
+
+# ====== llm_skills.py 追加 QGIS 工具箱向量检索与执行逻辑 ======
+from qgis import processing
+from qgis.core import (
+    QgsApplication, QgsProject, QgsMapLayer, QgsVectorLayer, QgsRasterLayer,
+    QgsProcessingParameterDefinition
+)
+from .qgis_vector_indexer import QgisToolVectorIndexer
+
+
+def qgis_search_tools(query: str, top_k: int = 5) -> str:
+    """语义搜索 QGIS 算子"""
+    indexer = QgisToolVectorIndexer()
+    results = indexer.search(query, top_k=top_k)
+    if not results:
+        return f"未找到与 '{query}' 相关的 QGIS 算子。"
+
+    lines = [f"🔍 为您检索到最匹配的 {len(results)} 个 QGIS 算子："]
+    for r in results:
+        lines.append(f"- **ID**: `{r['id']}` | **名称**: {r['name']} ({r['group']}) | 相似度: {r['score']:.2f}")
+        lines.append(f"  *描述*: {r['description']}")
+    lines.append("\n👉 您可以调用 `qgis_get_tool_params(algorithm_id)` 获取入参详情，随后调用 `qgis_run_algorithm` 执行。")
+    return "\n".join(lines)
+
+
+def qgis_get_tool_params(algorithm_id: str) -> str:
+    """获取指定算法的参数 Schema"""
+    alg = QgsApplication.processingRegistry().algorithmById(algorithm_id)
+    if not alg:
+        return f"错误：未找到算子 `{algorithm_id}`"
+
+    param_info = [f"🛠️ **算法 `{algorithm_id}` ({alg.displayName()}) 参数列表**:"]
+    for p in alg.parameterDefinitions():
+        req = "必填" if not (p.flags() & QgsProcessingParameterDefinition.FlagOptional) else "选填"
+        param_info.append(f"- **{p.name()}** ({p.type()}, {req}): {p.description()} (默认值: {p.defaultValue()})")
+
+    return "\n".join(param_info)
+
+
+def _looks_like_layer_param(alg, param_name: str) -> bool:
+    """粗略判断某个参数是否是图层类输入，用于提前拦截"传了图层名但找不到"的情况"""
+    try:
+        p = alg.parameterDefinition(param_name)
+        if p is None:
+            return False
+        return p.type() in ("source", "layer", "raster", "vector", "multilayer")
+    except Exception:
+        return param_name.upper() in ("INPUT", "SOURCE", "LAYER", "LAYER_T1", "LAYER_T2")
+
+
+def qgis_run_algorithm(algorithm_id: str, parameters: dict) -> str:
+    """使用 pyqgis 真正运行算法，用显式 context 避免输出图层被提前销毁，并做严格结果校验"""
+    from qgis.core import QgsProcessingContext, QgsProcessingFeedback
+
+    try:
+        registry = QgsApplication.processingRegistry()
+        # 用 createAlgorithmById 生成一个独立实例，而不是复用注册表里的共享单例，
+        # 避免多次调用之间互相污染状态
+        alg = registry.createAlgorithmById(algorithm_id)
+        if not alg:
+            return f"❌ 错误：未找到算法 `{algorithm_id}`"
+
+        # 1. 解析参数中的图层（LLM 传入图层名时自动转换为 QgsMapLayer 对象）
+        resolved_params = {}
+        missing_layer_names = []
+        for k, v in parameters.items():
+            if isinstance(v, str):
+                layers = QgsProject.instance().mapLayersByName(v)
+                if layers:
+                    resolved_params[k] = layers[0]
+                elif _looks_like_layer_param(alg, k):
+                    # 参数名明显是图层输入，但按名字找不到对应图层，直接拦截报错
+                    missing_layer_names.append((k, v))
+                    resolved_params[k] = v
+                else:
+                    resolved_params[k] = v
+            else:
+                resolved_params[k] = v
+
+        if missing_layer_names:
+            detail = ", ".join(f"{k}='{v}'" for k, v in missing_layer_names)
+            return f"❌ 参数解析失败：找不到图层 {detail}，请先调用 get_active_layers 确认准确图层名后重试。"
+
+        # 2. 为所有未指定的输出参数赋默认值
+        for out in alg.outputDefinitions():
+            if out.name() not in resolved_params:
+                resolved_params[out.name()] = "memory:"
+
+        # 3. 用显式、存活到函数结束的 context 执行算法（关键修复点）
+        context = QgsProcessingContext()
+        context.setProject(QgsProject.instance())
+        feedback = QgsProcessingFeedback()
+
+        # 注意：QgsProcessingAlgorithm.run() 返回的元组顺序是 (results, ok)，
+        # 不是 (ok, results)！先结果字典，后布尔值，顺序不能写反。
+        outputs, ok = alg.run(resolved_params, context, feedback)
+
+        if not ok:
+            return f"❌ 算法 `{alg.displayName()}` ({algorithm_id}) 执行失败：{feedback.textLog() or '无详细日志'}"
+
+        # 4. 捕获产出图层并加载到项目
+        loaded_layers = []
+
+        # 4a. 官方标准做法：遍历 context.layersToLoadOnCompletion()。
+        #     这是 processing.runAndLoadResults() 内部真正依赖的机制，
+        #     它明确记录了"这次运行产生了哪些应当被加载进工程的图层"，
+        #     比自己去猜 outputs 里字符串该怎么解析要可靠得多。
+        layers_to_load = dict(context.layersToLoadOnCompletion())
+        for layer_id, details in layers_to_load.items():
+            layer = context.temporaryLayerStore().mapLayer(layer_id)
+            if layer is None:
+                layer = QgsProject.instance().mapLayer(layer_id)
+            if layer is not None and layer.isValid():
+                # 取出所有权，避免 context 销毁时图层被一并删除
+                context.temporaryLayerStore().removeMapLayer(layer_id)
+                display_name = details.name if getattr(details, "name", None) else layer.name()
+                layer.setName(display_name)
+                QgsProject.instance().addMapLayer(layer)
+                loaded_layers.append(layer.name())
+
+        # 4b. 兜底：极少数算法不走 layersToLoadOnCompletion，
+        #     再尝试直接从 outputs 字符串/对象里恢复图层
+        if not loaded_layers:
+            for out_name, out_val in outputs.items():
+                layer = None
+                if isinstance(out_val, QgsMapLayer):
+                    layer = out_val
+                elif isinstance(out_val, str) and out_val:
+                    layer = context.temporaryLayerStore().mapLayer(out_val)
+                    if layer is None and os.path.exists(out_val):
+                        lower = out_val.lower()
+                        if lower.endswith(('.tif', '.tiff', '.img')):
+                            cand = QgsRasterLayer(out_val, f"{alg.displayName()}_结果")
+                            layer = cand if cand.isValid() else None
+                        elif lower.endswith(('.shp', '.gpkg', '.geojson')):
+                            cand = QgsVectorLayer(out_val, f"{alg.displayName()}_结果", "ogr")
+                            layer = cand if cand.isValid() else None
+
+                if layer is not None and layer.isValid():
+                    context.temporaryLayerStore().takeMapLayer(layer)
+                    QgsProject.instance().addMapLayer(layer)
+                    loaded_layers.append(layer.name())
+
+        # 5. 严格校验：没捕获到任何有效图层，就不能说"执行成功"，避免 LLM 编造完成报告
+        if not loaded_layers:
+            return (
+                f"⚠️ 算法 `{alg.displayName()}` ({algorithm_id}) 已调用完成，"
+                f"但未捕获到任何有效的输出图层（可能是空结果、参数不匹配或图层被丢弃）。\n"
+                f"原始输出: {json.dumps({k: str(v) for k, v in outputs.items()}, ensure_ascii=False)}\n"
+                f"请不要向用户报告任务已成功完成，应如实说明结果未确认，并建议检查参数或重试。"
+            )
+
+        return f"✅ 算法 `{alg.displayName()}` ({algorithm_id}) 执行成功，已加载图层: {', '.join(loaded_layers)}"
+
+    except Exception as e:
+        return f"❌ 执行算子 `{algorithm_id}` 失败: {str(e)}"

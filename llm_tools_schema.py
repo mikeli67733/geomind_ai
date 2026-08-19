@@ -242,3 +242,66 @@ LLM_TOOLS = [
         }
     }
 ]
+# ====== 在 llm_tools_schema.py 的 LLM_TOOLS 列表中追加以下内容 ======
+LLM_TOOLS.extend([
+    {
+        "type": "function",
+        "function": {
+            "name": "qgis_search_tools",
+            "description": "基于语义向量搜索 QGIS 原生工具箱中的所有算法（如缓冲区分析、裁剪、相交、栅格计算、重采样、坡度分析等）。当不知道用什么算子时首先调用此工具。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索描述，例如：'矢量缓冲区分析'、'栅格重投影'、'按属性提取要素'、'计算要素面积'"
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "返回最匹配的算子数量，默认 5",
+                        "default": 5
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "qgis_get_tool_params",
+            "description": "获取指定 QGIS 算法的输入参数详细定义、默认值与说明，帮助生成准确的调用参数。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "algorithm_id": {
+                        "type": "string",
+                        "description": "算子 ID，例如 'native:buffer' 或 'gdal:cliprasterbymasklayer'"
+                    }
+                },
+                "required": ["algorithm_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "qgis_run_algorithm",
+            "description": "动态执行指定的 QGIS Processing 算法并将生成的图层自动加载至地图画布中。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "algorithm_id": {
+                        "type": "string",
+                        "description": "算法唯一标识符，如 'native:buffer'"
+                    },
+                    "parameters": {
+                        "type": "object",
+                        "description": "传递给 processing.run 的参数字典。图层参数可直接传入图层名称；输出项不填则默认使用内存图层 'memory:'。"
+                    }
+                },
+                "required": ["algorithm_id", "parameters"]
+            }
+        }
+    }
+])
