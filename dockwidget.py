@@ -1888,7 +1888,7 @@ class LlmCopilotWidget(QWidget):
         layout.addLayout(input_layout)
 
         # ---------------- 4. 底部安全警示 ----------------
-        self.disclaimer_label = QLabel("💡 <b>提示</b>：AI 助手支持自然语言执行缓冲区、光谱指数计算、高程分析、AI地物提取及地图定位等。")
+        self.disclaimer_label = QLabel("💡 <b>提示</b>：AI 模型运算可能存在出错风险，请在运行前做好数据保存工作。")
         self.disclaimer_label.setStyleSheet("""
             QLabel {
                 background-color: #fffbeb;
