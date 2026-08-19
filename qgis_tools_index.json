@@ -1,0 +1,1742 @@
+[
+  {
+    "id": "3d:tessellate",
+    "name": "镶嵌",
+    "group": "矢量几何图形",
+    "description": "镶嵌"
+  },
+  {
+    "id": "native:addautoincrementalfield",
+    "name": "添加自增量字段",
+    "group": "矢量属性表",
+    "description": "添加自增量字段"
+  },
+  {
+    "id": "native:addfieldtoattributestable",
+    "name": "添加字段到属性表",
+    "group": "矢量属性表",
+    "description": "添加字段到属性表"
+  },
+  {
+    "id": "native:addhistorymetadata",
+    "name": "添加历史记录元数据",
+    "group": "元数据工具",
+    "description": "添加历史记录元数据"
+  },
+  {
+    "id": "native:adduniquevalueindexfield",
+    "name": "添加唯一值索引字段",
+    "group": "矢量属性表",
+    "description": "添加唯一值索引字段"
+  },
+  {
+    "id": "native:addxyfields",
+    "name": "添加X/Y字段到图层",
+    "group": "矢量属性表",
+    "description": "添加X和Y (或经纬度) 字段到点图层。"
+  },
+  {
+    "id": "native:affinetransform",
+    "name": "仿射转换",
+    "group": "矢量几何图形",
+    "description": "将仿射变换应用于几何图形。"
+  },
+  {
+    "id": "native:aggregate",
+    "name": "聚合",
+    "group": "矢量几何图形",
+    "description": "聚合"
+  },
+  {
+    "id": "native:alignrasters",
+    "name": "对齐栅格",
+    "group": "栅格工具",
+    "description": "对齐栅格"
+  },
+  {
+    "id": "native:angletonearest",
+    "name": "对齐点到要素",
+    "group": "制图",
+    "description": "旋转点要素将与其附近的要素对齐。"
+  },
+  {
+    "id": "native:antimeridiansplit",
+    "name": "在逆子午线分割测地线",
+    "group": "矢量几何图形",
+    "description": "当线穿过对向子午线时，将线分成多个测地线段（±180度经度线）。"
+  },
+  {
+    "id": "native:arrayoffsetlines",
+    "name": "偏移（平行）线数组",
+    "group": "矢量创建",
+    "description": "从图层创建线的多个偏移副本。"
+  },
+  {
+    "id": "native:arraytranslatedfeatures",
+    "name": "转换要素数组",
+    "group": "矢量创建",
+    "description": "从图层中创建要素的多个转换副本。"
+  },
+  {
+    "id": "native:aspect",
+    "name": "坡向",
+    "group": "栅格地形分析",
+    "description": "坡向"
+  },
+  {
+    "id": "native:assignprojection",
+    "name": "指定投影",
+    "group": "矢量通用",
+    "description": "指定投影"
+  },
+  {
+    "id": "native:atlaslayouttoimage",
+    "name": "地图集布局导出为图像",
+    "group": "制图",
+    "description": "将地图集布局导出为一组图像。"
+  },
+  {
+    "id": "native:atlaslayouttomultiplepdf",
+    "name": "将地图集布局导出为PDF文件 (多文件)",
+    "group": "制图",
+    "description": "将地图集布局导出为多个PDF文件。"
+  },
+  {
+    "id": "native:atlaslayouttopdf",
+    "name": "将地图集布局导出为PDF文件 (单文件)",
+    "group": "制图",
+    "description": "将地图集布局导出为一个PDF文件。"
+  },
+  {
+    "id": "native:b3dmtogltf",
+    "name": "将B3DM转换为GLTF",
+    "group": "3D切片",
+    "description": "将B3DM转换为GLTF"
+  },
+  {
+    "id": "native:basicstatisticsforfields",
+    "name": "字段基本统计",
+    "group": "矢量分析",
+    "description": "字段基本统计"
+  },
+  {
+    "id": "native:batchnominatimgeocoder",
+    "name": "批处理 Nominatim 地理编码",
+    "group": "矢量通用",
+    "description": "批处理 Nominatim 地理编码"
+  },
+  {
+    "id": "native:bookmarkstolayer",
+    "name": "转换空间书签到图层",
+    "group": "矢量通用",
+    "description": "转换储存的空间书签到多边形图层"
+  },
+  {
+    "id": "native:boundary",
+    "name": "边界",
+    "group": "矢量几何图形",
+    "description": "边界"
+  },
+  {
+    "id": "native:boundingboxes",
+    "name": "边界框",
+    "group": "矢量几何图形",
+    "description": "边界框"
+  },
+  {
+    "id": "native:buffer",
+    "name": "缓冲区",
+    "group": "矢量几何图形",
+    "description": "缓冲区"
+  },
+  {
+    "id": "native:bufferbym",
+    "name": "可变宽度缓冲区 (按M值)",
+    "group": "矢量几何图形",
+    "description": "可变宽度缓冲区 (按M值)"
+  },
+  {
+    "id": "native:calculatevectoroverlaps",
+    "name": "重叠分析",
+    "group": "矢量分析",
+    "description": "重叠分析"
+  },
+  {
+    "id": "native:categorizeusingstyle",
+    "name": "根据样式创建分类渲染",
+    "group": "制图",
+    "description": "使用样式数据库中的符号将矢量图层的渲染器设置为分类的渲染器。"
+  },
+  {
+    "id": "native:cellstackpercentile",
+    "name": "像元堆栈百分比",
+    "group": "栅格分析",
+    "description": "像元堆栈百分比"
+  },
+  {
+    "id": "native:cellstackpercentrankfromrasterlayer",
+    "name": "来自栅格图层的像元堆栈百分比排位",
+    "group": "栅格分析",
+    "description": "来自栅格图层的像元堆栈百分比排位"
+  },
+  {
+    "id": "native:cellstackpercentrankfromvalue",
+    "name": "来自值的像元堆栈百分比排位",
+    "group": "栅格分析",
+    "description": "来自值的像元堆栈百分比排位"
+  },
+  {
+    "id": "native:cellstatistics",
+    "name": "像元统计",
+    "group": "栅格分析",
+    "description": "像元统计"
+  },
+  {
+    "id": "native:centroids",
+    "name": "质心",
+    "group": "矢量几何图形",
+    "description": "质心"
+  },
+  {
+    "id": "native:checkgeometryangle",
+    "name": "检查几何图形 (角度)",
+    "group": "检查几何图形",
+    "description": "检查几何图形 (角度)"
+  },
+  {
+    "id": "native:checkgeometryarea",
+    "name": "检查几何图形 (面积)",
+    "group": "检查几何图形",
+    "description": "检查几何图形 (面积)"
+  },
+  {
+    "id": "native:checkgeometryhole",
+    "name": "检查几何图形 (孔)",
+    "group": "检查几何图形",
+    "description": "检查几何图形 (孔)"
+  },
+  {
+    "id": "native:checkgeometrymissingvertex",
+    "name": "检查几何图形 (缺失顶点)",
+    "group": "检查几何图形",
+    "description": "检查几何图形 (缺失顶点)"
+  },
+  {
+    "id": "native:clip",
+    "name": "裁剪",
+    "group": "矢量叠加分析",
+    "description": "裁剪"
+  },
+  {
+    "id": "native:collect",
+    "name": "集合几何图形",
+    "group": "矢量几何图形",
+    "description": "集合几何图形"
+  },
+  {
+    "id": "native:combinestyles",
+    "name": "合并样式数据库",
+    "group": "制图",
+    "description": "将多个样式数据库组合到一个数据库中。"
+  },
+  {
+    "id": "native:concavehull",
+    "name": "凹包",
+    "group": "矢量几何图形",
+    "description": "凹包"
+  },
+  {
+    "id": "native:convertgpsdata",
+    "name": "转换GPS数据",
+    "group": "GPS",
+    "description": "转换GPS数据"
+  },
+  {
+    "id": "native:convertgpxfeaturetype",
+    "name": "转换GPX要素类型",
+    "group": "GPS",
+    "description": "转换GPX要素类型"
+  },
+  {
+    "id": "native:converttocurves",
+    "name": "转换为曲线几何图形",
+    "group": "矢量几何图形",
+    "description": "转换为曲线几何图形"
+  },
+  {
+    "id": "native:convexhull",
+    "name": "凸包",
+    "group": "矢量几何图形",
+    "description": "凸包"
+  },
+  {
+    "id": "native:copylayermetadata",
+    "name": "复制图层元数据",
+    "group": "元数据工具",
+    "description": "复制图层元数据"
+  },
+  {
+    "id": "native:countpointsinpolygon",
+    "name": "统计点在多边形中的数量",
+    "group": "矢量分析",
+    "description": "计算位于多边形要素内的点要素。"
+  },
+  {
+    "id": "native:coveragesimplify",
+    "name": "简化Coverage",
+    "group": "矢量Coverage",
+    "description": "简化多边形要素的Coverage，同时保留有效的Coverage"
+  },
+  {
+    "id": "native:coverageunion",
+    "name": "融合Coverage",
+    "group": "矢量Coverage",
+    "description": "融合多边形要素的Coverage"
+  },
+  {
+    "id": "native:coveragevalidate",
+    "name": "验证Coverage",
+    "group": "矢量Coverage",
+    "description": "分析多边形要素的Coverage，找到未满足完全匹配边假设的位置"
+  },
+  {
+    "id": "native:createattributeindex",
+    "name": "创建属性索引",
+    "group": "矢量通用",
+    "description": "创建属性索引"
+  },
+  {
+    "id": "native:createconstantrasterlayer",
+    "name": "创建固定值栅格图层",
+    "group": "栅格创建",
+    "description": "创建固定值栅格图层"
+  },
+  {
+    "id": "native:creategrid",
+    "name": "创建网格",
+    "group": "矢量创建",
+    "description": "创建网格"
+  },
+  {
+    "id": "native:createpointslayerfromtable",
+    "name": "从表格创建点图层",
+    "group": "矢量创建",
+    "description": "从表格创建点图层"
+  },
+  {
+    "id": "native:createrandombinomialrasterlayer",
+    "name": "创建随机栅格图层（二项分布）",
+    "group": "栅格创建",
+    "description": "创建随机栅格图层（二项分布）"
+  },
+  {
+    "id": "native:createrandomexponentialrasterlayer",
+    "name": "创建随机栅格图层（指数分布）",
+    "group": "栅格创建",
+    "description": "创建随机栅格图层（指数分布）"
+  },
+  {
+    "id": "native:createrandomgammarasterlayer",
+    "name": "创建随机栅格图层（伽玛分布）",
+    "group": "栅格创建",
+    "description": "创建随机栅格图层（伽玛分布）"
+  },
+  {
+    "id": "native:createrandomgeometricrasterlayer",
+    "name": "创建随机栅格图层（几何分布）",
+    "group": "栅格创建",
+    "description": "创建随机栅格图层（几何分布）"
+  },
+  {
+    "id": "native:createrandomnegativebinomialrasterlayer",
+    "name": "创建随机栅格图层（负二项分布）",
+    "group": "栅格创建",
+    "description": "创建随机栅格图层（负二项分布）"
+  },
+  {
+    "id": "native:createrandomnormalrasterlayer",
+    "name": "创建随机栅格图层（正态分布）",
+    "group": "栅格创建",
+    "description": "创建随机栅格图层（正态分布）"
+  },
+  {
+    "id": "native:createrandompoissonrasterlayer",
+    "name": "创建随机栅格图层（泊松分布）",
+    "group": "栅格创建",
+    "description": "创建随机栅格图层（泊松分布）"
+  },
+  {
+    "id": "native:createrandomuniformrasterlayer",
+    "name": "创建随机栅格图层 (均匀分布)",
+    "group": "栅格创建",
+    "description": "创建随机栅格图层 (均匀分布)"
+  },
+  {
+    "id": "native:createspatialindex",
+    "name": "创建空间索引",
+    "group": "矢量通用",
+    "description": "创建空间索引"
+  },
+  {
+    "id": "native:dbscanclustering",
+    "name": "DBSCAN聚类",
+    "group": "矢量分析",
+    "description": "使用基于密度的扫描算法对点要素进行聚类。"
+  },
+  {
+    "id": "native:delaunaytriangulation",
+    "name": "德洛内三角网",
+    "group": "矢量几何图形",
+    "description": "德洛内三角网"
+  },
+  {
+    "id": "native:deletecolumn",
+    "name": "删除字段",
+    "group": "矢量属性表",
+    "description": "从矢量图层中删除字段。"
+  },
+  {
+    "id": "native:deleteduplicategeometries",
+    "name": "删除重复几何图形",
+    "group": "矢量通用",
+    "description": "在图层中找到重复几何图形并删除它们。"
+  },
+  {
+    "id": "native:deleteholes",
+    "name": "删除空洞",
+    "group": "矢量几何图形",
+    "description": "删除空洞"
+  },
+  {
+    "id": "native:densifygeometries",
+    "name": "按数量增密",
+    "group": "矢量几何图形",
+    "description": "创建几何图形的密实化版本。"
+  },
+  {
+    "id": "native:densifygeometriesgivenaninterval",
+    "name": "按间隔增密",
+    "group": "矢量几何图形",
+    "description": "创建几何图形的密实化版本。"
+  },
+  {
+    "id": "native:detectvectorchanges",
+    "name": "检测数据集更改",
+    "group": "矢量通用",
+    "description": "计算在两个数据集版本之间不变、添加或删除的要素。"
+  },
+  {
+    "id": "native:difference",
+    "name": "差集",
+    "group": "矢量叠加分析",
+    "description": "差集"
+  },
+  {
+    "id": "native:dissolve",
+    "name": "融合",
+    "group": "矢量几何图形",
+    "description": "融合"
+  },
+  {
+    "id": "native:downloadgpsdata",
+    "name": "从设备下载GPS数据",
+    "group": "GPS",
+    "description": "从设备下载GPS数据"
+  },
+  {
+    "id": "native:downloadvectortiles",
+    "name": "下载矢量切片",
+    "group": "矢量切片",
+    "description": "下载矢量切片"
+  },
+  {
+    "id": "native:dropgeometries",
+    "name": "丢弃几何图形",
+    "group": "矢量通用",
+    "description": "丢弃几何图形"
+  },
+  {
+    "id": "native:dropmzvalues",
+    "name": "删除M/Z值",
+    "group": "矢量几何图形",
+    "description": "删除M/Z值"
+  },
+  {
+    "id": "native:dtmslopebasedfilter",
+    "name": "DTM过滤 (基于坡度)",
+    "group": "栅格地形分析",
+    "description": "DTM过滤 (基于坡度)"
+  },
+  {
+    "id": "native:dxfexport",
+    "name": "导出图层到DXF",
+    "group": "矢量通用",
+    "description": "导出图层到DXF"
+  },
+  {
+    "id": "native:equaltofrequency",
+    "name": "等于频率",
+    "group": "栅格分析",
+    "description": "等于频率"
+  },
+  {
+    "id": "native:explodehstorefield",
+    "name": "分解HStore字段",
+    "group": "矢量属性表",
+    "description": "分解HStore字段"
+  },
+  {
+    "id": "native:explodelines",
+    "name": "分解线",
+    "group": "矢量几何图形",
+    "description": "分解线"
+  },
+  {
+    "id": "native:exportlayermetadata",
+    "name": "导出图层元数据",
+    "group": "元数据工具",
+    "description": "导出图层元数据"
+  },
+  {
+    "id": "native:exportlayersinformation",
+    "name": "导出图层信息",
+    "group": "图层工具",
+    "description": "导出图层信息"
+  },
+  {
+    "id": "native:exportmeshedges",
+    "name": "导出网孔边线",
+    "group": "网孔",
+    "description": "将网孔边导出到线矢量图层"
+  },
+  {
+    "id": "native:exportmeshfaces",
+    "name": "导出网孔面",
+    "group": "网孔",
+    "description": "将网孔面导出到多边形矢量图层"
+  },
+  {
+    "id": "native:exportmeshongrid",
+    "name": "导出网格上的网孔",
+    "group": "网孔",
+    "description": "将网孔数据集值导出到网格点矢量图层"
+  },
+  {
+    "id": "native:exportmeshvertices",
+    "name": "导出网孔顶点",
+    "group": "网孔",
+    "description": "将网孔顶点导出到点矢量图层"
+  },
+  {
+    "id": "native:exporttospreadsheet",
+    "name": "导出到电子表格",
+    "group": "图层工具",
+    "description": "导出到电子表格"
+  },
+  {
+    "id": "native:extendlines",
+    "name": "延长线",
+    "group": "矢量几何图形",
+    "description": "通过推断起点和终点线段扩展线串的几何图形。"
+  },
+  {
+    "id": "native:extenttolayer",
+    "name": "从范围创建图层",
+    "group": "矢量几何图形",
+    "description": "从范围创建图层"
+  },
+  {
+    "id": "native:extractbinary",
+    "name": "提取二进制字段",
+    "group": "矢量属性表",
+    "description": "该算法从二进制字段中提取内容，并将其保存到单个文件中。"
+  },
+  {
+    "id": "native:extractbyattribute",
+    "name": "按属性提取",
+    "group": "矢量选择集",
+    "description": "按属性提取"
+  },
+  {
+    "id": "native:extractbyexpression",
+    "name": "按表达式提取",
+    "group": "矢量选择集",
+    "description": "按表达式提取"
+  },
+  {
+    "id": "native:extractbyextent",
+    "name": "按范围提取/裁剪",
+    "group": "矢量叠加分析",
+    "description": "按范围提取/裁剪"
+  },
+  {
+    "id": "native:extractbylocation",
+    "name": "按位置提取",
+    "group": "矢量选择集",
+    "description": "按位置提取"
+  },
+  {
+    "id": "native:extractlabels",
+    "name": "提取标注",
+    "group": "制图",
+    "description": "将地图标注转换为点图层，并将相关详细信息保存为属性。"
+  },
+  {
+    "id": "native:extractmvalues",
+    "name": "提取M值",
+    "group": "矢量几何图形",
+    "description": "从几何图形中提取m值（或m值统计信息）到要素属性中。"
+  },
+  {
+    "id": "native:extractspecificvertices",
+    "name": "提取特定的顶点",
+    "group": "矢量几何图形",
+    "description": "提取特定的顶点"
+  },
+  {
+    "id": "native:extractvertices",
+    "name": "提取顶点",
+    "group": "矢量几何图形",
+    "description": "提取顶点"
+  },
+  {
+    "id": "native:extractwithindistance",
+    "name": "提取距离以内",
+    "group": "矢量选择集",
+    "description": "提取距离以内"
+  },
+  {
+    "id": "native:extractzvalues",
+    "name": "提取Z值",
+    "group": "矢量几何图形",
+    "description": "从几何图形中提取Z值（或Z值统计信息）到要素属性中。"
+  },
+  {
+    "id": "native:fieldcalculator",
+    "name": "字段计算器",
+    "group": "矢量属性表",
+    "description": "字段计算器"
+  },
+  {
+    "id": "native:filedownloader",
+    "name": "通过HTTP(S)下载文件",
+    "group": "文件工具",
+    "description": "使用 HTTP(S) GET 或 POST 请求将URL下载到文件系统"
+  },
+  {
+    "id": "native:fillnodata",
+    "name": "填充无数据像元",
+    "group": "栅格工具",
+    "description": "填充无数据像元"
+  },
+  {
+    "id": "native:filterbygeometry",
+    "name": "按几何图形类型过滤",
+    "group": "矢量选择集",
+    "description": "按几何图形类型过滤要素"
+  },
+  {
+    "id": "native:filterverticesbym",
+    "name": "以M值过滤顶点",
+    "group": "矢量几何图形",
+    "description": "以M值过滤顶点"
+  },
+  {
+    "id": "native:filterverticesbyz",
+    "name": "以Z值过滤顶点",
+    "group": "矢量几何图形",
+    "description": "以Z值过滤顶点"
+  },
+  {
+    "id": "native:fixgeometries",
+    "name": "修正几何图形",
+    "group": "矢量几何图形",
+    "description": "修正几何图形"
+  },
+  {
+    "id": "native:fixgeometryangle",
+    "name": "修正几何图形 (角度)",
+    "group": "修正几何图形",
+    "description": "修正几何图形 (角度)"
+  },
+  {
+    "id": "native:fixgeometryarea",
+    "name": "修正几何图形 (面积)",
+    "group": "修正几何图形",
+    "description": "修正几何图形 (面积)"
+  },
+  {
+    "id": "native:fixgeometryhole",
+    "name": "修正几何图形 (孔)",
+    "group": "修正几何图形",
+    "description": "修正几何图形 (孔)"
+  },
+  {
+    "id": "native:fixgeometrymissingvertex",
+    "name": "修正几何图形 (缺失顶点)",
+    "group": "修正几何图形",
+    "description": "修正几何图形 (缺失顶点)"
+  },
+  {
+    "id": "native:flattenrelationships",
+    "name": "一维化关系",
+    "group": "矢量通用",
+    "description": "一维化矢量图层的关系。"
+  },
+  {
+    "id": "native:forcerhr",
+    "name": "强制右手定则",
+    "group": "矢量几何图形",
+    "description": "强制多边形几何图形遵守右手定则。"
+  },
+  {
+    "id": "native:fuzzifyrastergaussianmembership",
+    "name": "模糊栅格（高斯隶属度）",
+    "group": "栅格分析",
+    "description": "模糊栅格（高斯隶属度）"
+  },
+  {
+    "id": "native:fuzzifyrasterlargemembership",
+    "name": "模糊栅格（大值隶属度）",
+    "group": "栅格分析",
+    "description": "模糊栅格（大值隶属度）"
+  },
+  {
+    "id": "native:fuzzifyrasterlinearmembership",
+    "name": "模糊栅格（线性隶属度）",
+    "group": "栅格分析",
+    "description": "模糊栅格（线性隶属度）"
+  },
+  {
+    "id": "native:fuzzifyrasternearmembership",
+    "name": "模糊栅格（邻近隶属度）",
+    "group": "栅格分析",
+    "description": "模糊栅格（邻近隶属度）"
+  },
+  {
+    "id": "native:fuzzifyrasterpowermembership",
+    "name": "模糊栅格（幂隶属度）",
+    "group": "栅格分析",
+    "description": "模糊栅格（幂隶属度）"
+  },
+  {
+    "id": "native:fuzzifyrastersmallmembership",
+    "name": "模糊栅格（小值隶属度）",
+    "group": "栅格分析",
+    "description": "模糊栅格（小值隶属度）"
+  },
+  {
+    "id": "native:generateelevationprofileimage",
+    "name": "生成高程剖面图像",
+    "group": "图表",
+    "description": "生成高程剖面图像"
+  },
+  {
+    "id": "native:generatepointspixelcentroidsinsidepolygons",
+    "name": "在多边形内部生成点（像素质心）",
+    "group": "矢量创建",
+    "description": "在多边形内部生成点（像素质心）"
+  },
+  {
+    "id": "native:geometrybyexpression",
+    "name": "几何图形表达式",
+    "group": "矢量几何图形",
+    "description": "几何图形表达式"
+  },
+  {
+    "id": "native:gltftovector",
+    "name": "将GLTF转换为矢量要素",
+    "group": "3D切片",
+    "description": "将GLTF转换为矢量要素"
+  },
+  {
+    "id": "native:greaterthanfrequency",
+    "name": "大于频率",
+    "group": "栅格分析",
+    "description": "大于频率"
+  },
+  {
+    "id": "native:highestpositioninrasterstack",
+    "name": "栅格堆栈中的最高位置",
+    "group": "栅格分析",
+    "description": "栅格堆栈中的最高位置"
+  },
+  {
+    "id": "native:hillshade",
+    "name": "山体阴影",
+    "group": "栅格地形分析",
+    "description": "山体阴影"
+  },
+  {
+    "id": "native:httprequest",
+    "name": "HTTP(S) POST/GET 请求",
+    "group": "文件工具",
+    "description": "执行 HTTP(S) POST/GET 请求并返回结果代码、错误消息和数据"
+  },
+  {
+    "id": "native:hublines",
+    "name": "按线连接（枢纽线）",
+    "group": "矢量分析",
+    "description": "基于公共属性值创建连接两个点图层的线。"
+  },
+  {
+    "id": "native:importintopostgis",
+    "name": "Export to PostgreSQL",
+    "group": "Database",
+    "description": "将矢量图层导出到PostgreSQL数据库"
+  },
+  {
+    "id": "native:importphotos",
+    "name": "导入带有地理标签的照片",
+    "group": "矢量创建",
+    "description": "导入带有地理标签的照片"
+  },
+  {
+    "id": "native:interpolatepoint",
+    "name": "在线上插值点",
+    "group": "矢量几何图形",
+    "description": "沿直线以指定的距离插入点。"
+  },
+  {
+    "id": "native:intersection",
+    "name": "相交",
+    "group": "矢量叠加分析",
+    "description": "相交"
+  },
+  {
+    "id": "native:joinattributesbylocation",
+    "name": "按位置连接属性",
+    "group": "矢量通用",
+    "description": "按位置将属性从一个矢量图层连接到另一矢量图层。"
+  },
+  {
+    "id": "native:joinattributestable",
+    "name": "按字段值连接属性",
+    "group": "矢量通用",
+    "description": "按字段值连接属性"
+  },
+  {
+    "id": "native:joinbylocationsummary",
+    "name": "按位置连接属性 (汇总)",
+    "group": "矢量通用",
+    "description": "按位置计算从一个到另一个矢量图层的属性汇总。"
+  },
+  {
+    "id": "native:joinbynearest",
+    "name": "按最近的方式连接属性",
+    "group": "矢量通用",
+    "description": "使用最接近的要素（最近邻）将一个图层连接到另一个图层。"
+  },
+  {
+    "id": "native:keepnbiggestparts",
+    "name": "保留N个最大部件",
+    "group": "矢量几何图形",
+    "description": "保留N个最大部件"
+  },
+  {
+    "id": "native:kmeansclustering",
+    "name": "K均值聚类算法",
+    "group": "矢量分析",
+    "description": "K均值聚类算法"
+  },
+  {
+    "id": "native:layertobookmarks",
+    "name": "将图层转换为空间书签",
+    "group": "矢量通用",
+    "description": "将要素范围转换为存储的空间书签。"
+  },
+  {
+    "id": "native:lessthanfrequency",
+    "name": "小于频率",
+    "group": "栅格分析",
+    "description": "小于频率"
+  },
+  {
+    "id": "native:linedensity",
+    "name": "线密度",
+    "group": "插值",
+    "description": "线密度"
+  },
+  {
+    "id": "native:lineintersections",
+    "name": "线相交",
+    "group": "矢量叠加分析",
+    "description": "线相交"
+  },
+  {
+    "id": "native:linesubstring",
+    "name": "线子字符串",
+    "group": "矢量几何图形",
+    "description": "返回介于开始和结束距离之间线的子字符串。"
+  },
+  {
+    "id": "native:lowestpositioninrasterstack",
+    "name": "栅格堆栈中的最低位置",
+    "group": "栅格分析",
+    "description": "栅格堆栈中的最低位置"
+  },
+  {
+    "id": "native:meancoordinates",
+    "name": "平均坐标",
+    "group": "矢量分析",
+    "description": "平均坐标"
+  },
+  {
+    "id": "native:mergelines",
+    "name": "合并线",
+    "group": "矢量几何图形",
+    "description": "合并线"
+  },
+  {
+    "id": "native:mergevectorlayers",
+    "name": "合并矢量图层",
+    "group": "矢量通用",
+    "description": "将相同几何图形类型的多个矢量图层合并为一个矢量图层。"
+  },
+  {
+    "id": "native:meshcontours",
+    "name": "导出等值线",
+    "group": "网孔",
+    "description": "从网孔标量数据集创建等值线作为矢量图层"
+  },
+  {
+    "id": "native:meshexportcrosssection",
+    "name": "从网孔导出线上的剖面数据集值",
+    "group": "网孔",
+    "description": "从矢量图层包含的线中提取网孔数据集的值"
+  },
+  {
+    "id": "native:meshexporttimeseries",
+    "name": "从网孔数据集中的点导出时间序列值",
+    "group": "网孔",
+    "description": "从矢量图层中包含的点中提取网孔数据集的时间序列值"
+  },
+  {
+    "id": "native:meshrasterize",
+    "name": "栅格化网孔数据集",
+    "group": "网孔",
+    "description": "从网孔数据集创建栅格图层"
+  },
+  {
+    "id": "native:minimumenclosingcircle",
+    "name": "最小包含圆",
+    "group": "矢量几何图形",
+    "description": "最小包含圆"
+  },
+  {
+    "id": "native:multidifference",
+    "name": "差集 (多个)",
+    "group": "矢量叠加分析",
+    "description": "差集 (多个)"
+  },
+  {
+    "id": "native:multiintersection",
+    "name": "相交 (多个)",
+    "group": "矢量叠加分析",
+    "description": "相交 (多个)"
+  },
+  {
+    "id": "native:multiparttosingleparts",
+    "name": "多部件转单部件",
+    "group": "矢量几何图形",
+    "description": "多部件转单部件"
+  },
+  {
+    "id": "native:multiringconstantbuffer",
+    "name": "多环缓冲区（固定距离）",
+    "group": "矢量几何图形",
+    "description": "多环缓冲区（固定距离）"
+  },
+  {
+    "id": "native:multiunion",
+    "name": "联合 (多个)",
+    "group": "矢量叠加分析",
+    "description": "联合 (多个)"
+  },
+  {
+    "id": "native:nearestneighbouranalysis",
+    "name": "最近邻分析",
+    "group": "矢量分析",
+    "description": "最近邻分析"
+  },
+  {
+    "id": "native:offsetline",
+    "name": "偏移线",
+    "group": "矢量几何图形",
+    "description": "使线偏移指定的距离。"
+  },
+  {
+    "id": "native:openurl",
+    "name": "打开文件或URL",
+    "group": "文件工具",
+    "description": "在默认关联的应用程序中打开文件，或在用户的默认Web浏览器中打开URL。"
+  },
+  {
+    "id": "native:orderbyexpression",
+    "name": "按表达式排序",
+    "group": "矢量通用",
+    "description": "按表达式排序"
+  },
+  {
+    "id": "native:orientedminimumboundingbox",
+    "name": "定向最小边界框",
+    "group": "矢量几何图形",
+    "description": "定向最小边界框"
+  },
+  {
+    "id": "native:orthogonalize",
+    "name": "正交化",
+    "group": "矢量几何图形",
+    "description": "正交化"
+  },
+  {
+    "id": "native:package",
+    "name": "打包图层",
+    "group": "数据库",
+    "description": "打包图层"
+  },
+  {
+    "id": "native:pixelstopoints",
+    "name": "栅格像素转点",
+    "group": "矢量创建",
+    "description": "创建与栅格图层中各像素相对应的点矢量图层。"
+  },
+  {
+    "id": "native:pixelstopolygons",
+    "name": "栅格像素转多边形",
+    "group": "矢量创建",
+    "description": "创建与栅格图层中各像素相对应的多边形矢量图层。"
+  },
+  {
+    "id": "native:pointonsurface",
+    "name": "表面上的点",
+    "group": "矢量几何图形",
+    "description": "表面上的点"
+  },
+  {
+    "id": "native:pointsalonglines",
+    "name": "沿几何图形的点",
+    "group": "矢量几何图形",
+    "description": "沿线要素创建规则间隔的点。"
+  },
+  {
+    "id": "native:pointstopath",
+    "name": "点转线 - 创建路径",
+    "group": "矢量创建",
+    "description": "点转线 - 创建路径"
+  },
+  {
+    "id": "native:pointtolayer",
+    "name": "从点创建图层",
+    "group": "矢量几何图形",
+    "description": "从点创建图层"
+  },
+  {
+    "id": "native:poleofinaccessibility",
+    "name": "难抵极点",
+    "group": "矢量几何图形",
+    "description": "难抵极点"
+  },
+  {
+    "id": "native:polygonfromlayerextent",
+    "name": "提取图层范围",
+    "group": "图层工具",
+    "description": "提取图层范围"
+  },
+  {
+    "id": "native:polygonize",
+    "name": "多边形化",
+    "group": "矢量几何图形",
+    "description": "多边形化"
+  },
+  {
+    "id": "native:polygonstolines",
+    "name": "多边形转线",
+    "group": "矢量几何图形",
+    "description": "将多边形转换为线。"
+  },
+  {
+    "id": "native:postgisexecutesql",
+    "name": "PostgreSQL执行SQL语句",
+    "group": "数据库",
+    "description": "PostgreSQL执行SQL语句"
+  },
+  {
+    "id": "native:printlayoutmapextenttolayer",
+    "name": "将布局地图范围打印到图层",
+    "group": "制图",
+    "description": "创建一个包含打印布局地图项范围的多边形图层。"
+  },
+  {
+    "id": "native:printlayouttoimage",
+    "name": "将打印布局导出为图像",
+    "group": "制图",
+    "description": "将打印布局导出为图像"
+  },
+  {
+    "id": "native:printlayouttopdf",
+    "name": "将打印布局导出为PDF",
+    "group": "制图",
+    "description": "将打印布局导出为PDF。"
+  },
+  {
+    "id": "native:projectpointcartesian",
+    "name": "投影点 (笛卡尔坐标)",
+    "group": "矢量几何图形",
+    "description": "投影点 (笛卡尔坐标)"
+  },
+  {
+    "id": "native:promotetomulti",
+    "name": "提升为多部件",
+    "group": "矢量几何图形",
+    "description": "提升为多部件"
+  },
+  {
+    "id": "native:randomextract",
+    "name": "随机提取",
+    "group": "矢量选择集",
+    "description": "随机提取"
+  },
+  {
+    "id": "native:randompointsinextent",
+    "name": "范围内随机生成点",
+    "group": "矢量创建",
+    "description": "范围内随机生成点"
+  },
+  {
+    "id": "native:randompointsinpolygons",
+    "name": "多边形内的随机点",
+    "group": "矢量创建",
+    "description": "多边形内的随机点"
+  },
+  {
+    "id": "native:randompointsonlines",
+    "name": "线上的随机点",
+    "group": "矢量创建",
+    "description": "线上的随机点"
+  },
+  {
+    "id": "native:rasterbooleanand",
+    "name": "栅格布尔和",
+    "group": "栅格分析",
+    "description": "计算一组输入栅格图层布尔和"
+  },
+  {
+    "id": "native:rastercalc",
+    "name": "栅格计算器",
+    "group": "栅格分析",
+    "description": "栅格计算器"
+  },
+  {
+    "id": "native:rasterize",
+    "name": "将地图转为栅格",
+    "group": "栅格工具",
+    "description": "将地图画布渲染到栅格文件。"
+  },
+  {
+    "id": "native:rasterlayerproperties",
+    "name": "栅格图层属性",
+    "group": "栅格分析",
+    "description": "栅格图层属性"
+  },
+  {
+    "id": "native:rasterlayerstatistics",
+    "name": "栅格图层统计",
+    "group": "栅格分析",
+    "description": "栅格图层统计"
+  },
+  {
+    "id": "native:rasterlayeruniquevaluesreport",
+    "name": "栅格图层唯一值报告",
+    "group": "栅格分析",
+    "description": "栅格图层唯一值报告"
+  },
+  {
+    "id": "native:rasterlayerzonalstats",
+    "name": "栅格图层分区统计",
+    "group": "栅格分析",
+    "description": "计算栅格图层值的统计信息，按另一个栅格图层中定义的带来分类。"
+  },
+  {
+    "id": "native:rasterlogicalor",
+    "name": "栅格布尔或",
+    "group": "栅格分析",
+    "description": "计算一组输入栅格图层的布尔或"
+  },
+  {
+    "id": "native:rasterminmax",
+    "name": "栅格最小/最大值",
+    "group": "栅格分析",
+    "description": "计算栅格图层中的最小和最大像素。"
+  },
+  {
+    "id": "native:rastersampling",
+    "name": "对栅格值取样",
+    "group": "栅格分析",
+    "description": "在一组点下对栅格值进行采样。"
+  },
+  {
+    "id": "native:rastersurfacevolume",
+    "name": "栅格表面体积",
+    "group": "栅格分析",
+    "description": "计算栅格网格表面下的容积。"
+  },
+  {
+    "id": "native:reclassifybylayer",
+    "name": "按图层重分类",
+    "group": "栅格分析",
+    "description": "按图层重分类"
+  },
+  {
+    "id": "native:reclassifybytable",
+    "name": "按表格重分类",
+    "group": "栅格分析",
+    "description": "按表格重分类"
+  },
+  {
+    "id": "native:rectanglesovalsdiamonds",
+    "name": "创建矩形,椭圆,菱形",
+    "group": "矢量几何图形",
+    "description": "创建矩形,椭圆,菱形"
+  },
+  {
+    "id": "native:refactorfields",
+    "name": "重构字段",
+    "group": "矢量属性表",
+    "description": "重构字段"
+  },
+  {
+    "id": "native:removeduplicatesbyattribute",
+    "name": "删除重复属性",
+    "group": "矢量通用",
+    "description": "通过一个字段值（或多个字段值）删除重复的行。"
+  },
+  {
+    "id": "native:removeduplicatevertices",
+    "name": "移除重复的顶点",
+    "group": "矢量几何图形",
+    "description": "移除重复的顶点"
+  },
+  {
+    "id": "native:removenullgeometries",
+    "name": "移除空的几何图形",
+    "group": "矢量几何图形",
+    "description": "移除空的几何图形"
+  },
+  {
+    "id": "native:renametablefield",
+    "name": "重命名字段",
+    "group": "矢量属性表",
+    "description": "重命名矢量图层中的现有字段。"
+  },
+  {
+    "id": "native:repairshapefile",
+    "name": "修复形状文件",
+    "group": "矢量通用",
+    "description": "通过重新创建SHX文件，修复损坏的形状文件。"
+  },
+  {
+    "id": "native:reprojectlayer",
+    "name": "重投影图层",
+    "group": "矢量通用",
+    "description": "重投影图层"
+  },
+  {
+    "id": "native:rescaleraster",
+    "name": "重缩放栅格值域",
+    "group": "栅格分析",
+    "description": "重缩放栅格值域"
+  },
+  {
+    "id": "native:retainfields",
+    "name": "保留字段",
+    "group": "矢量属性表",
+    "description": "保留矢量图层中的选定字段。"
+  },
+  {
+    "id": "native:reverselinedirection",
+    "name": "反转线方向",
+    "group": "矢量几何图形",
+    "description": "反转曲线或线串几何图形的方向。"
+  },
+  {
+    "id": "native:rotatefeatures",
+    "name": "旋转",
+    "group": "矢量几何图形",
+    "description": "旋转"
+  },
+  {
+    "id": "native:roundness",
+    "name": "圆度",
+    "group": "矢量几何图形",
+    "description": "计算多边形要素的圆度。"
+  },
+  {
+    "id": "native:roundrastervalues",
+    "name": "舍入栅格",
+    "group": "栅格分析",
+    "description": "舍入栅格"
+  },
+  {
+    "id": "native:ruggednessindex",
+    "name": "耐用指数",
+    "group": "栅格地形分析",
+    "description": "耐用指数"
+  },
+  {
+    "id": "native:savefeatures",
+    "name": "将矢量要素保存到文件",
+    "group": "矢量通用",
+    "description": "将矢量要素保存到文件"
+  },
+  {
+    "id": "native:saveselectedfeatures",
+    "name": "提取选中的要素",
+    "group": "矢量通用",
+    "description": "提取选中的要素"
+  },
+  {
+    "id": "native:segmentizebymaxangle",
+    "name": "按最大角度分段",
+    "group": "矢量几何图形",
+    "description": "按最大角度分段"
+  },
+  {
+    "id": "native:segmentizebymaxdistance",
+    "name": "通过最大距离分段",
+    "group": "矢量几何图形",
+    "description": "通过最大距离分段"
+  },
+  {
+    "id": "native:selectbylocation",
+    "name": "按位置选择",
+    "group": "矢量选择集",
+    "description": "按位置选择"
+  },
+  {
+    "id": "native:selectwithindistance",
+    "name": "选择距离以内",
+    "group": "矢量选择集",
+    "description": "选择距离以内"
+  },
+  {
+    "id": "native:serviceareafromlayer",
+    "name": "服务区（从图层）",
+    "group": "网络分析",
+    "description": "服务区（从图层）"
+  },
+  {
+    "id": "native:serviceareafrompoint",
+    "name": "服务区（从点）",
+    "group": "网络分析",
+    "description": "服务区（从点）"
+  },
+  {
+    "id": "native:setlayerencoding",
+    "name": "设置图层编码",
+    "group": "矢量通用",
+    "description": "设置用于读取图层属性的编码"
+  },
+  {
+    "id": "native:setlayermetadata",
+    "name": "设置图层元数据",
+    "group": "元数据工具",
+    "description": "设置图层元数据"
+  },
+  {
+    "id": "native:setlayerstyle",
+    "name": "设置图层样式",
+    "group": "制图",
+    "description": "设置图层样式"
+  },
+  {
+    "id": "native:setmetadatafields",
+    "name": "设置元数据字段",
+    "group": "元数据工具",
+    "description": "设置元数据字段"
+  },
+  {
+    "id": "native:setmfromraster",
+    "name": "从栅格设置M值",
+    "group": "矢量几何图形",
+    "description": "将顶点的M值设置为从栅格图层采样的值。"
+  },
+  {
+    "id": "native:setmvalue",
+    "name": "设置M值",
+    "group": "矢量几何图形",
+    "description": "设置M值"
+  },
+  {
+    "id": "native:setzfromraster",
+    "name": "贴加 (从栅格设置Z值)",
+    "group": "矢量几何图形",
+    "description": "将顶点的Z值设置为从栅格图层采样的值。"
+  },
+  {
+    "id": "native:setzvalue",
+    "name": "设置Z值",
+    "group": "矢量几何图形",
+    "description": "设置Z值"
+  },
+  {
+    "id": "native:shortestline",
+    "name": "要素之间最短线",
+    "group": "矢量分析",
+    "description": "要素之间最短线"
+  },
+  {
+    "id": "native:shortestpathlayertopoint",
+    "name": "最短路径（图层到点）",
+    "group": "网络分析",
+    "description": "最短路径（图层到点）"
+  },
+  {
+    "id": "native:shortestpathpointtolayer",
+    "name": "最短路径（点到图层）",
+    "group": "网络分析",
+    "description": "最短路径（点到图层）"
+  },
+  {
+    "id": "native:shortestpathpointtopoint",
+    "name": "最短路径（点到点）",
+    "group": "网络分析",
+    "description": "最短路径（点到点）"
+  },
+  {
+    "id": "native:shpencodinginfo",
+    "name": "提取形状文件编码",
+    "group": "矢量通用",
+    "description": "提取嵌入形状文件中的属性编码信息。"
+  },
+  {
+    "id": "native:simplifygeometries",
+    "name": "简化",
+    "group": "矢量几何图形",
+    "description": "简化"
+  },
+  {
+    "id": "native:singlesidedbuffer",
+    "name": "单边缓冲区",
+    "group": "矢量几何图形",
+    "description": "单边缓冲区"
+  },
+  {
+    "id": "native:slope",
+    "name": "坡度",
+    "group": "栅格地形分析",
+    "description": "坡度"
+  },
+  {
+    "id": "native:smoothgeometry",
+    "name": "平滑",
+    "group": "矢量几何图形",
+    "description": "平滑"
+  },
+  {
+    "id": "native:snapgeometries",
+    "name": "将几何图形捕捉到图层",
+    "group": "矢量几何图形",
+    "description": "将几何图形捕捉到图层"
+  },
+  {
+    "id": "native:snappointstogrid",
+    "name": "点捕捉到网格",
+    "group": "矢量几何图形",
+    "description": "点捕捉到网格"
+  },
+  {
+    "id": "native:spatialiteexecutesql",
+    "name": "SpatiaLite执行SQL语句",
+    "group": "数据库",
+    "description": "SpatiaLite执行SQL语句"
+  },
+  {
+    "id": "native:spatialiteexecutesqlregistered",
+    "name": "SpatiaLite执行SQL语句（注册的数据库）",
+    "group": "数据库",
+    "description": "SpatiaLite执行SQL语句（注册的数据库）"
+  },
+  {
+    "id": "native:splitfeaturesbycharacter",
+    "name": "按字符分割要素",
+    "group": "矢量通用",
+    "description": "通过按字符拆分字段，将要素拆分为多个输出要素。"
+  },
+  {
+    "id": "native:splitlinesbylength",
+    "name": "按最大长度分割线",
+    "group": "矢量几何图形",
+    "description": "将线分割为不超过指定长度的部件。"
+  },
+  {
+    "id": "native:splitvectorlayer",
+    "name": "分割矢量图层",
+    "group": "矢量通用",
+    "description": "分割矢量图层"
+  },
+  {
+    "id": "native:splitwithlines",
+    "name": "用线分割",
+    "group": "矢量叠加分析",
+    "description": "用线分割"
+  },
+  {
+    "id": "native:stdbscanclustering",
+    "name": "ST-DBSCAN聚类",
+    "group": "矢量分析",
+    "description": "使用基于时间和密度的扫描算法聚类时空点要素。"
+  },
+  {
+    "id": "native:stylefromproject",
+    "name": "从工程创建样式数据库",
+    "group": "制图",
+    "description": "从QGIS工程提取所有符号、颜色渐变、文本格式和标注设置创建样式数据库。"
+  },
+  {
+    "id": "native:subdivide",
+    "name": "再分",
+    "group": "矢量几何图形",
+    "description": "再分"
+  },
+  {
+    "id": "native:sumlinelengths",
+    "name": "计算线总长",
+    "group": "矢量分析",
+    "description": "计算线总长"
+  },
+  {
+    "id": "native:surfacetopolygon",
+    "name": "表面转多边形",
+    "group": "网孔",
+    "description": "表面转多边形"
+  },
+  {
+    "id": "native:swapxy",
+    "name": "交换X和Y的坐标",
+    "group": "矢量几何图形",
+    "description": "交换X和Y的坐标"
+  },
+  {
+    "id": "native:symmetricaldifference",
+    "name": "交集取反",
+    "group": "矢量叠加分析",
+    "description": "交集取反"
+  },
+  {
+    "id": "native:taperedbuffer",
+    "name": "锥形缓冲区",
+    "group": "矢量几何图形",
+    "description": "锥形缓冲区"
+  },
+  {
+    "id": "native:tilesxyzdirectory",
+    "name": "生成XYZ切片 (目录)",
+    "group": "栅格工具",
+    "description": "生成XYZ切片 (目录)"
+  },
+  {
+    "id": "native:tilesxyzmbtiles",
+    "name": "生成XYZ切片 (MBTiles)",
+    "group": "栅格工具",
+    "description": "生成XYZ切片 (MBTiles)"
+  },
+  {
+    "id": "native:tinmeshcreation",
+    "name": "从不规则三角网网孔创建",
+    "group": "网孔",
+    "description": "从矢量图层创建不规则三角网网孔图层"
+  },
+  {
+    "id": "native:transect",
+    "name": "样带线",
+    "group": "矢量几何图形",
+    "description": "样带线"
+  },
+  {
+    "id": "native:transferannotationsfrommain",
+    "name": "从主图层迁移注记",
+    "group": "制图",
+    "description": "从主图层迁移注记"
+  },
+  {
+    "id": "native:translategeometry",
+    "name": "偏移",
+    "group": "矢量几何图形",
+    "description": "偏移"
+  },
+  {
+    "id": "native:truncatetable",
+    "name": "快速清空表格",
+    "group": "矢量通用",
+    "description": "快速清空表格"
+  },
+  {
+    "id": "native:union",
+    "name": "联合",
+    "group": "矢量叠加分析",
+    "description": "联合"
+  },
+  {
+    "id": "native:updatelayermetadata",
+    "name": "更新图层元数据",
+    "group": "元数据工具",
+    "description": "更新图层元数据"
+  },
+  {
+    "id": "native:uploadgpsdata",
+    "name": "将GPS数据上传到设备",
+    "group": "GPS",
+    "description": "将GPS数据上传到设备"
+  },
+  {
+    "id": "native:virtualrastercalc",
+    "name": "栅格计算器 (虚拟)",
+    "group": "栅格分析",
+    "description": "栅格计算器 (虚拟)"
+  },
+  {
+    "id": "native:voronoipolygons",
+    "name": "沃罗诺伊多边形",
+    "group": "矢量几何图形",
+    "description": "沃罗诺伊多边形"
+  },
+  {
+    "id": "native:wedgebuffers",
+    "name": "建立楔形缓冲区",
+    "group": "矢量几何图形",
+    "description": "建立楔形缓冲区"
+  },
+  {
+    "id": "native:writevectortiles_mbtiles",
+    "name": "写入矢量切片 (MBTiles)",
+    "group": "矢量切片",
+    "description": "写入矢量切片 (MBTiles)"
+  },
+  {
+    "id": "native:writevectortiles_xyz",
+    "name": "写入矢量切片 (XYZ)",
+    "group": "矢量切片",
+    "description": "写入矢量切片 (XYZ)"
+  },
+  {
+    "id": "native:zonalhistogram",
+    "name": "区域直方图",
+    "group": "栅格分析",
+    "description": "区域直方图"
+  },
+  {
+    "id": "native:zonalminmaxpoint",
+    "name": "分区最小/最大点",
+    "group": "栅格分析",
+    "description": "提取多边形带内最小和最大栅格值的点位置。"
+  },
+  {
+    "id": "native:zonalstatisticsfb",
+    "name": "分区统计",
+    "group": "栅格分析",
+    "description": "分区统计"
+  },
+  {
+    "id": "pdal:assignprojection",
+    "name": "指定投影",
+    "group": "点云数据管理",
+    "description": "指定投影"
+  },
+  {
+    "id": "pdal:boundary",
+    "name": "边界",
+    "group": "点云提取",
+    "description": "边界"
+  },
+  {
+    "id": "pdal:clip",
+    "name": "裁剪",
+    "group": "点云数据管理",
+    "description": "裁剪"
+  },
+  {
+    "id": "pdal:convertformat",
+    "name": "格式转换",
+    "group": "点云转换",
+    "description": "格式转换"
+  },
+  {
+    "id": "pdal:createcopc",
+    "name": "创建COPC",
+    "group": "点云数据管理",
+    "description": "创建COPC"
+  },
+  {
+    "id": "pdal:density",
+    "name": "密度",
+    "group": "点云提取",
+    "description": "密度"
+  },
+  {
+    "id": "pdal:exportraster",
+    "name": "导出为栅格",
+    "group": "点云转换",
+    "description": "导出为栅格"
+  },
+  {
+    "id": "pdal:exportrastertin",
+    "name": "导出为栅格 (使用三角测量)",
+    "group": "点云转换",
+    "description": "导出为栅格 (使用三角测量)"
+  },
+  {
+    "id": "pdal:exportvector",
+    "name": "导出为矢量",
+    "group": "点云转换",
+    "description": "导出为矢量"
+  },
+  {
+    "id": "pdal:filter",
+    "name": "过滤",
+    "group": "点云提取",
+    "description": "过滤"
+  },
+  {
+    "id": "pdal:info",
+    "name": "信息",
+    "group": "点云数据管理",
+    "description": "信息"
+  },
+  {
+    "id": "pdal:merge",
+    "name": "合并",
+    "group": "点云数据管理",
+    "description": "合并"
+  },
+  {
+    "id": "pdal:reproject",
+    "name": "重投影",
+    "group": "点云数据管理",
+    "description": "重投影"
+  },
+  {
+    "id": "pdal:thinbydecimate",
+    "name": "细化 (按跳过点)",
+    "group": "点云数据管理",
+    "description": "细化 (按跳过点)"
+  },
+  {
+    "id": "pdal:thinbyradius",
+    "name": "细化 (按抽样半径)",
+    "group": "点云数据管理",
+    "description": "细化 (按抽样半径)"
+  },
+  {
+    "id": "pdal:tile",
+    "name": "切片",
+    "group": "点云数据管理",
+    "description": "切片"
+  },
+  {
+    "id": "pdal:virtualpointcloud",
+    "name": "构建虚拟点云 (VPC)",
+    "group": "点云数据管理",
+    "description": "构建虚拟点云 (VPC)"
+  }
+]
