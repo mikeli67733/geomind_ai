@@ -1534,12 +1534,8 @@ class RasterPolygonizeWidget(QWidget):
             self.status_label.setText("矢量化失败")
             QMessageBox.critical(self, "错误", f"转换失败: {e}")
 
-
 # =========================================================================
-# 四、 账号与服务器网关设置页
-# =========================================================================
-# =========================================================================
-# 四、 账号与服务器网关设置页（已精简，无需配置任何大模型 Key）
+# 四、 账号与服务网关设置页 (纯极简版，仅保留刷新网关)
 # =========================================================================
 class AccountSettingsPage(QWidget):
     def __init__(self, main_dock, parent=None):
@@ -1579,31 +1575,18 @@ class AccountSettingsPage(QWidget):
         acc_layout.addLayout(btn_row)
         layout.addWidget(acc_group)
 
-        # 2. 网络与网关服务设置（无需大模型配置，统一走网关）
-        server_group = QGroupBox("网络与服务网关")
+        # 2. 网络与服务状态（仅保留刷新按钮）
+        server_group = QGroupBox("服务网关")
         server_layout = QVBoxLayout(server_group)
 
-        notice_banner = QLabel("🌸 提示：若遇到连接超时或解译报错，可点击【🔄 刷新网关】同步最新通道。")
+        notice_banner = QLabel("🌸 提示：若遇到连接超时或网络异常，可点击下方按钮同步最新服务节点。")
         notice_banner.setObjectName("noticeBanner")
         notice_banner.setWordWrap(True)
         server_layout.addWidget(notice_banner)
 
-        url_row = QHBoxLayout()
-        url_row.addWidget(QLabel("网关:"))
-        self.server_url_edit = QLineEdit()
-        self.server_url_edit.setPlaceholderText(DEFAULT_SERVER_URL or "http://127.0.0.1:5000")
-        url_row.addWidget(self.server_url_edit)
-        server_layout.addLayout(url_row)
-
-        action_row = QHBoxLayout()
-        self.refresh_url_btn = QPushButton("🔄 刷新网关")
+        self.refresh_url_btn = QPushButton("🔄 同步并刷新最新网关")
         self.refresh_url_btn.clicked.connect(self._refresh_url)
-        action_row.addWidget(self.refresh_url_btn)
-
-        self.save_url_btn = QPushButton("💾 保存配置")
-        self.save_url_btn.clicked.connect(self._save_custom_url)
-        action_row.addWidget(self.save_url_btn)
-        server_layout.addLayout(action_row)
+        server_layout.addWidget(self.refresh_url_btn)
 
         layout.addWidget(server_group)
         layout.addStretch()
@@ -1636,29 +1619,20 @@ class AccountSettingsPage(QWidget):
 
     def _refresh_url(self):
         self.refresh_url_btn.setEnabled(False)
-        self.refresh_url_btn.setText("刷新中...")
+        self.refresh_url_btn.setText("正在同步网关...")
         QApplication.processEvents()
         try:
-            new_url = fetch_remote_server_url()
-            if new_url:
-                self.server_url_edit.setText(new_url)
-                self.dock.settings.remove(SETTINGS_KEY_SERVER_URL)
-                self.dock.settings.setValue("is_custom_server", False)
-                QMessageBox.information(self, "成功", f"成功获取最新网关：\n{new_url}")
+            # 强制刷新缓存
+            new_url = self.dock.get_remote_or_default_url(force_refresh=True)
+            if new_url and new_url != self.dock.FALLBACK_SERVER_URL:
+                QMessageBox.information(self, "成功", "已成功同步最新服务网关通道！")
             else:
-                QMessageBox.warning(self, "提示", "未能获取最新地址，请检查网络")
+                QMessageBox.warning(self, "提示", "未能拉取到最新网关，已自动启用默认通道。")
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"刷新失败: {e}")
+            QMessageBox.critical(self, "错误", f"刷新网关失败: {e}")
         finally:
             self.refresh_url_btn.setEnabled(True)
-            self.refresh_url_btn.setText("🔄 刷新网关")
-
-    def _save_custom_url(self):
-        url = self.server_url_edit.text().strip()
-        if url:
-            self.dock.settings.setValue(SETTINGS_KEY_SERVER_URL, url)
-            self.dock.settings.setValue("is_custom_server", True)
-            QMessageBox.information(self, "成功", "网关服务器地址已保存！")
+            self.refresh_url_btn.setText("🔄 同步并刷新最新网关")
 
 
 # =========================================================================
@@ -2350,14 +2324,7 @@ class ImageInterpretDockWidget(QDockWidget):
     FALLBACK_SERVER_URL = "http://127.0.0.1:8000"
 
     def get_remote_or_default_url(self, force_refresh: bool = False) -> str:
-        """
-        尽可能获取 remote_url 并做缓存：
-        1. 远程动态拉取 (remote_url)
-        2. 上次成功获取的内存缓存 (_cached_remote_url)
-        3. 静态默认配置 (DEFAULT_SERVER_URL)
-        4. 本地兜底 (FALLBACK_SERVER_URL)
-        """
-        # 如果强制刷新，或者此前尚未缓存成功，则尝试拉取远程地址
+        """获取远程网关并做内存缓存，避免重复请求"""
         if force_refresh or not getattr(self, '_cached_remote_url', None):
             try:
                 if callable(globals().get("fetch_remote_server_url")):
@@ -2365,47 +2332,19 @@ class ImageInterpretDockWidget(QDockWidget):
                     if remote:
                         self._cached_remote_url = str(remote).strip().rstrip("/")
             except Exception:
-                pass  # 网络异常时静默失败，走后续兜底
+                pass
 
-        # 按优先级返回有效地址
         cached = getattr(self, '_cached_remote_url', None)
         default_cfg = (DEFAULT_SERVER_URL or "").strip().rstrip("/")
         return cached or default_cfg or self.FALLBACK_SERVER_URL
 
     def current_server_url(self) -> str:
-        """
-        获取当前生效的服务器地址：
-        - 仅当明确开启【自定义服务器 (is_custom_server)】时，才使用用户输入/保存的自定义地址
-        - 其余所有情况均尽可能使用 remote_url
-        """
-        is_custom = self.settings.value("is_custom_server", False, type=bool)
-
-        # 1. 只有开启了自定义，才允许使用输入框或保存的自定义配置
-        if is_custom:
-            if hasattr(self, 'account_page') and hasattr(self.account_page, 'server_url_edit'):
-                url = self.account_page.server_url_edit.text().strip().rstrip("/")
-                if url:
-                    return url
-            saved = self.settings.value(SETTINGS_KEY_SERVER_URL, "", type=str).strip().rstrip("/")
-            if saved:
-                return saved
-
-        # 2. 只要未开启自定义，均尽可能使用 remote_url
+        """统一通过远程或默认网关访问"""
         return self.get_remote_or_default_url()
 
     def _load_settings(self):
-        """加载配置并回填到 UI"""
-        is_custom = self.settings.value("is_custom_server", False, type=bool)
-
-        if is_custom:
-            # 自定义模式：显示保存的自定义 URL
-            target_url = self.settings.value(SETTINGS_KEY_SERVER_URL, "", type=str).strip().rstrip("/")
-        else:
-            # 非自定义模式：强制拉取并使用最新的 remote_url
-            target_url = self.get_remote_or_default_url(force_refresh=True)
-
-        if hasattr(self, 'account_page') and hasattr(self.account_page, 'server_url_edit'):
-            self.account_page.server_url_edit.setText(target_url)
+        """后台预热拉取一次最新网关"""
+        self.get_remote_or_default_url(force_refresh=False)
 
     def _try_restore_login(self):
         token = self.settings.value(SETTINGS_KEY_TOKEN, "")
