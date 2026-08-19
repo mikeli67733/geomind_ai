@@ -25,6 +25,7 @@ from qgis.core import (
     QgsProject, QgsMapLayerProxyModel, QgsRasterLayer, QgsVectorLayer,
     QgsRectangle, QgsCoordinateTransform, QgsApplication
 )
+from qgis.PyQt.QtGui import QTextCursor, QTextCharFormat, QColor, QFont
 from qgis.gui import QgsMapLayerComboBox
 
 from .extent_tool import ExtentSelectTool
@@ -40,7 +41,7 @@ from .constants import (
     PLAN_LABELS, FREE_PLAN_DAILY_QUOTA, fetch_remote_server_url
 )
 from qgis.core import QgsApplication
-from .llm_agent import LlmApiTask
+from .llm_agent import BackendCopilotTask
 from .constants import (
     SETTINGS_KEY_LLM_API_KEY, SETTINGS_KEY_LLM_BASE_URL, SETTINGS_KEY_LLM_MODEL,
     DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL,find_class_ids_by_keywords, get_model_key_by_mode
@@ -1537,6 +1538,9 @@ class RasterPolygonizeWidget(QWidget):
 # =========================================================================
 # 四、 账号与服务器网关设置页
 # =========================================================================
+# =========================================================================
+# 四、 账号与服务器网关设置页（已精简，无需配置任何大模型 Key）
+# =========================================================================
 class AccountSettingsPage(QWidget):
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -1548,6 +1552,7 @@ class AccountSettingsPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
+        # 1. 用户信息卡片
         acc_group = QGroupBox("用户信息")
         acc_layout = QVBoxLayout(acc_group)
 
@@ -1574,27 +1579,9 @@ class AccountSettingsPage(QWidget):
         acc_layout.addLayout(btn_row)
         layout.addWidget(acc_group)
 
-        server_group = QGroupBox("网络与网关设置")
+        # 2. 网络与网关服务设置（无需大模型配置，统一走网关）
+        server_group = QGroupBox("网络与服务网关")
         server_layout = QVBoxLayout(server_group)
-
-        # ======== 新增 LLM 设置 ========
-        llm_group = QGroupBox("大模型 (Copilot) API 设置")
-        llm_layout = QFormLayout(llm_group)
-
-        self.llm_url_edit = QLineEdit(self.dock.settings.value(SETTINGS_KEY_LLM_BASE_URL, DEFAULT_LLM_BASE_URL))
-        self.llm_model_edit = QLineEdit(self.dock.settings.value(SETTINGS_KEY_LLM_MODEL, DEFAULT_LLM_MODEL))
-        self.llm_key_edit = QLineEdit(self.dock.settings.value(SETTINGS_KEY_LLM_API_KEY, ""))
-        self.llm_key_edit.setEchoMode(QLineEdit.Password)
-
-        llm_layout.addRow("API Base URL:", self.llm_url_edit)
-        llm_layout.addRow("模型名称 (Model):", self.llm_model_edit)
-        llm_layout.addRow("API Key:", self.llm_key_edit)
-
-        save_llm_btn = QPushButton("💾 保存大模型配置")
-        save_llm_btn.clicked.connect(self._save_llm_settings)
-        llm_layout.addWidget(save_llm_btn)
-
-        layout.addWidget(llm_group)
 
         notice_banner = QLabel("🌸 提示：若遇到连接超时或解译报错，可点击【🔄 刷新网关】同步最新通道。")
         notice_banner.setObjectName("noticeBanner")
@@ -1604,7 +1591,7 @@ class AccountSettingsPage(QWidget):
         url_row = QHBoxLayout()
         url_row.addWidget(QLabel("网关:"))
         self.server_url_edit = QLineEdit()
-        self.server_url_edit.setPlaceholderText(DEFAULT_SERVER_URL or "http://127.0.0.1:8000")
+        self.server_url_edit.setPlaceholderText(DEFAULT_SERVER_URL or "http://127.0.0.1:5000")
         url_row.addWidget(self.server_url_edit)
         server_layout.addLayout(url_row)
 
@@ -1621,15 +1608,9 @@ class AccountSettingsPage(QWidget):
         layout.addWidget(server_group)
         layout.addStretch()
 
-    def _save_llm_settings(self):
-        self.dock.settings.setValue(SETTINGS_KEY_LLM_BASE_URL, self.llm_url_edit.text().strip())
-        self.dock.settings.setValue(SETTINGS_KEY_LLM_MODEL, self.llm_model_edit.text().strip())
-        self.dock.settings.setValue(SETTINGS_KEY_LLM_API_KEY, self.llm_key_edit.text().strip())
-        QMessageBox.information(self, "成功", "大模型 Copilot 配置已保存！")
-
     def update_account_ui(self, token, username, account_info):
         if not token:
-            self.account_status_label.setText("尚未登录，AI 大模型解译需登录后使用 (本地工具免费无限制)")
+            self.account_status_label.setText("尚未登录，AI 解译与 Copilot 助手需登录后使用 (本地遥感工具免费使用)")
             self.account_status_label.setStyleSheet("color: #64748b;")
             self.quota_label.setText("")
             self.login_btn.setVisible(True)
@@ -1815,17 +1796,16 @@ class HomePage(QWidget):
         layout.addStretch()
 
 
-from .llm_agent import LlmApiTask
-from .llm_tools_schema import LLM_TOOLS
+from .llm_agent import BackendCopilotTask
 import json
 import traceback
 
 
 # =========================================================================
-# 五-1. AI Copilot 对话交互组件 (带清空、中断与安全提示)
+# 五-1. AI Copilot 对话交互组件 (后端中枢驱动版)
 # =========================================================================
 class LlmCopilotWidget(QWidget):
-    """AI Copilot 对话交互窗口"""
+    """AI Copilot 对话交互窗口 (全权交由后端调度)"""
 
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -1833,6 +1813,8 @@ class LlmCopilotWidget(QWidget):
         self.chat_history = []
         self._llm_task = None
         self._active_ai_task = None
+        self._current_assistant_reply = ""
+        self._current_reasoning = ""
         self._build_ui()
 
     def _build_ui(self):
@@ -1840,7 +1822,7 @@ class LlmCopilotWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        # ---------------- 1. 顶部操作栏 (新建会话 / 停止) ----------------
+        # ---------------- 1. 顶部操作栏 ----------------
         top_bar = QHBoxLayout()
         top_bar.setSpacing(6)
 
@@ -1894,7 +1876,7 @@ class LlmCopilotWidget(QWidget):
         # ---------------- 3. 输入框与发送按钮 ----------------
         input_layout = QHBoxLayout()
         self.input_edit = QLineEdit()
-        self.input_edit.setPlaceholderText("请输入自然语言指令 (按回车发送)...")
+        self.input_edit.setPlaceholderText("输入您的遥感分析或 GIS 处理指令 (按回车发送)...")
         self.input_edit.returnPressed.connect(self._send_msg)
         input_layout.addWidget(self.input_edit, stretch=4)
 
@@ -1905,8 +1887,8 @@ class LlmCopilotWidget(QWidget):
         input_layout.addWidget(self.send_btn, stretch=1)
         layout.addLayout(input_layout)
 
-        # ---------------- 4. 底部安全警示与备份提示 ----------------
-        self.disclaimer_label = QLabel("⚠️ <b>免责提示</b>：AI 助手生成的内容与操作可能会出错，请在运行前做好工程与图层数据备份，注意核实关键参数与执行结果。")
+        # ---------------- 4. 底部安全警示 ----------------
+        self.disclaimer_label = QLabel("💡 <b>提示</b>：AI 助手支持自然语言执行缓冲区、光谱指数计算、高程分析、AI地物提取及地图定位等。")
         self.disclaimer_label.setStyleSheet("""
             QLabel {
                 background-color: #fffbeb;
@@ -1922,18 +1904,19 @@ class LlmCopilotWidget(QWidget):
         layout.addWidget(self.disclaimer_label)
 
     def _reset_welcome_message(self):
-        """重置欢迎语"""
         self.history_browser.setHtml(
-            "<b>🤖 GeoMind Copilot</b>: 你好！我是你的智能遥感分析助手。<br>"
-            "<i>提示：我可以帮你提取地物、执行栅格计算、运行 QGIS 工具或解答遥感问题。我会实时展示思考与执行步骤。</i>"
+            "<b>🤖 GeoMind Copilot</b>: 你好！我是你的遥感与 GIS 智能助手。<br>"
+            "<i>您可以直接对我说：<br>"
+            " • “帮我把道路图层做个 20 米缓冲区”<br>"
+            " • “计算 image 图层的 NDVI 植被指数”<br>"
+            " • “提取影像中的所有建筑物轮廓”</i>"
         )
 
     def _clear_and_new_session(self):
-        """清空并新建会话"""
         if self._llm_task is not None or self._active_ai_task is not None:
             reply = QMessageBox.question(
                 self, "确认新建会话",
-                "当前有正在进行的 AI 任务，新建会话将强制停止当前任务并清空历史，是否继续？",
+                "当前有正在进行的任务，是否强制停止并清空会话？",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if reply != QMessageBox.Yes:
@@ -1945,26 +1928,21 @@ class LlmCopilotWidget(QWidget):
         self._reset_btn()
 
     def _stop_current_task(self):
-        """打断当前任务 (包括 LLM 思考与云端解译)"""
         stopped = False
         if self._llm_task is not None:
-            try:
-                self._llm_task.cancel()
-            except Exception:
-                pass
+            try: self._llm_task.cancel()
+            except Exception: pass
             self._llm_task = None
             stopped = True
 
         if self._active_ai_task is not None:
-            try:
-                self._active_ai_task.cancel()
-            except Exception:
-                pass
+            try: self._active_ai_task.cancel()
+            except Exception: pass
             self._active_ai_task = None
             stopped = True
 
         if stopped:
-            self.history_browser.append("<br><b style='color:#dc2626'>⏹️ 用户已主动停止 AI 任务。</b>")
+            self.history_browser.append("<br><b style='color:#dc2626'>⏹️ 用户已停止当前任务。</b>")
             self._reset_btn()
 
     def _send_msg(self):
@@ -1972,135 +1950,147 @@ class LlmCopilotWidget(QWidget):
         if not text:
             return
 
-        api_key = self.dock.settings.value(SETTINGS_KEY_LLM_API_KEY, "")
-        if not api_key:
-            QMessageBox.warning(self, "未配置 API Key", "请先在【设置】页面填写您的 LLM API Key")
+        if not self.dock.token:
+            QMessageBox.warning(self, "请先登录", "使用 AI Copilot 助手需要先登录您的账号！")
             self.dock.show_account_page()
             return
 
         self.input_edit.clear()
         self.history_browser.append(f"<br><b style='color:#0f766e'>🧑‍💻 你:</b> {text}")
 
-        # 切换状态
         self.send_btn.setEnabled(False)
         self.send_btn.setText("AI 思考中...")
         self.stop_btn.setEnabled(True)
 
         self.chat_history.append({"role": "user", "content": text})
-        self._request_llm(with_tools=True)
+        self._request_backend_copilot()
 
-    def _request_llm(self, with_tools=False):
-        """向 LLM 发起异步请求"""
-        try:
-            base_url = self.dock.settings.value(SETTINGS_KEY_LLM_BASE_URL, DEFAULT_LLM_BASE_URL)
-            model = self.dock.settings.value(SETTINGS_KEY_LLM_MODEL, DEFAULT_LLM_MODEL)
-            api_key = self.dock.settings.value(SETTINGS_KEY_LLM_API_KEY, "")
+    def _request_backend_copilot(self):
+        """向后端发起流式对话请求"""
+        active_layers = [l.name() for l in QgsProject.instance().mapLayers().values()]
+        server_url = self.dock.current_server_url()
+        token = self.dock.token
+        machine_id = getattr(self.dock, "machine_id", "")  # 👈 获取机器码
 
-            payload = {
-                "model": model,
-                "messages": [{"role": "system", "content": "你是一个内置于 QGIS 的遥感分析助手，请尽量调用工具来处理地图图层。"}] + self.chat_history
-            }
-            if with_tools:
-                payload["tools"] = LLM_TOOLS
-                payload["tool_choice"] = "auto"
+        self._current_assistant_reply = ""
+        self._has_started_reasoning = False
+        self._has_started_text = False
 
-            self.history_browser.append(
-                f"<i style='color:#94a3b8; font-size:11px'>💡 [本地进程]: 正在连接大模型 ({model})...</i>"
-            )
+        from .llm_agent import BackendCopilotTask
+        # 👈 传入 machine_id
+        task = BackendCopilotTask(server_url, token, self.chat_history, active_layers, machine_id=machine_id)
+        task.chunkReceived.connect(self._on_chunk_received)
+        task.taskError.connect(self._on_copilot_error)
+        task.taskFinished.connect(self._on_copilot_finished)
 
-            task = LlmApiTask(payload, base_url, api_key)
-            task.apiFinished.connect(self._on_api_finished)
-            task.apiError.connect(self._on_api_error)
-            task.apiProgress.connect(self._on_api_progress)
-            self._llm_task = task
-            QgsApplication.taskManager().addTask(task)
-        except Exception as e:
-            self.history_browser.append(f"<br><b style='color:red'>❌ 构建请求失败:</b> {str(e)}")
+        self._llm_task = task
+        QgsApplication.taskManager().addTask(task)
+
+    def _on_chunk_received(self, data: dict):
+        msg_type = data.get("type")
+        content = data.get("content", "")
+
+        cursor = self.history_browser.textCursor()
+        cursor.movePosition(QTextCursor.End)
+
+        # 🌟 修复：捕获并显示后端传过来的错误信息
+        if msg_type == "error":
+            self.history_browser.append(f"<br><b style='color:#dc2626'>❌ 大模型响应异常:</b> {content}")
             self._reset_btn()
+            return
 
-    def _on_api_progress(self, msg: str):
-        """实时输出通信思考进度"""
-        self.history_browser.append(f"<i style='color:#94a3b8; font-size:11px'>💡 [通信进度]: {msg}</i>")
-        self.history_browser.verticalScrollBar().setValue(self.history_browser.verticalScrollBar().maximum())
-
-    def _on_api_finished(self, response_message: dict):
-        """LLM 请求完成回调"""
-        try:
-            # 1. 模型推理思考过程 (如 DeepSeek R1 reasoning_content)
-            reasoning = response_message.get("reasoning_content", "")
-            if reasoning:
+        # 1. 深度思考流 (Reasoning)
+        elif msg_type == "reasoning" and content:
+            if not self._has_started_reasoning:
+                self._has_started_reasoning = True
                 self.history_browser.append(
-                    f"<div style='color:#64748b; font-size:11px; border-left: 2px solid #cbd5e1; padding-left: 5px; margin: 5px 0;'>🤔 <b>模型推理过程:</b><br>{reasoning.replace(chr(10), '<br>')}</div>"
-                )
+                    "<div style='margin-top:6px; color:#475569; font-weight:bold; font-size:11px;'>🤔 模型思考过程:</div>")
+                cursor.movePosition(QTextCursor.End)
 
-            # 2. 工具调用分支
-            if "tool_calls" in response_message and response_message["tool_calls"]:
-                self.chat_history.append(response_message)
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#64748b"))
+            fmt.setFontItalic(True)
+            fmt.setFontPointSize(9)
+            cursor.insertText(content, fmt)
+            self._scroll_to_bottom()
 
-                for tool_call in response_message["tool_calls"]:
-                    fn_name = tool_call["function"]["name"]
-                    args_str = tool_call["function"]["arguments"]
-                    self.history_browser.append(
-                        f"<i style='color:#059669; font-size:12px'>🔧 [触发技能]: <b>{fn_name}</b> (参数: {args_str})</i>"
-                    )
-                    QApplication.processEvents()
+        # 2. 正常回答文本流 (Text)
+        elif msg_type == "text" and content:
+            if not self._has_started_text:
+                self._has_started_text = True
+                self.history_browser.append("<br><b>🤖 Copilot:</b> ")
+                cursor.movePosition(QTextCursor.End)
 
-                    try:
-                        args = json.loads(args_str)
-                        res = self._execute_local_skill(fn_name, args)
-                    except Exception as e:
-                        res = f"工具内部报错: {str(e)}"
+            self._current_assistant_reply += content
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#0f172a"))
+            fmt.setFontItalic(False)
+            fmt.setFontPointSize(10)
+            cursor.insertText(content, fmt)
+            self._scroll_to_bottom()
 
-                    self.history_browser.append(f"<i style='color:#059669; font-size:12px'>✅ [执行结果]: {res}</i>")
+        # 3. 工具调用 (Tool Call)
+        elif msg_type == "tool_call":
+            tool_calls = data.get("tool_calls", [])
+            self.chat_history.append({
+                "role": "assistant",
+                "content": self._current_assistant_reply or None,
+                "tool_calls": tool_calls
+            })
 
-                    self.chat_history.append({
-                        "tool_call_id": tool_call["id"],
-                        "role": "tool",
-                        "name": fn_name,
-                        "content": res
-                    })
-
+            for tc in tool_calls:
+                fn_name = tc["function"]["name"]
+                args_raw = tc["function"]["arguments"]
                 self.history_browser.append(
-                    "<i style='color:#94a3b8; font-size:11px'>💡 [本地进程]: 技能执行完毕，请求 AI 总结报告...</i>"
-                )
-                self._request_llm(with_tools=False)
+                    f"<br><i style='color:#059669; font-size:12px'>🔧 [执行本地技能]: <b>{fn_name}</b></i>")
+                QApplication.processEvents()
 
-            else:
-                # 3. 普通文本消息返回
-                reply = response_message.get("content", "")
-                if not reply:
-                    reply = "(空消息)"
+                try:
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    res = self._execute_local_skill(fn_name, args)
+                except Exception as e:
+                    res = f"执行报错: {str(e)}"
 
-                self.chat_history.append({"role": "assistant", "content": reply})
-                self.history_browser.append(f"<br><b>🤖 Copilot:</b> {reply.replace(chr(10), '<br>')}")
-                self._reset_btn()
+                self.history_browser.append(f"<i style='color:#059669; font-size:12px'>✅ [执行结果]: {res}</i>")
 
-        except Exception as e:
-            self.history_browser.append(f"<br><b style='color:red'>❌ 解析 AI 响应时出错:</b> {str(e)}")
-            self.history_browser.append(f"<pre style='font-size:10px'>{traceback.format_exc()}</pre>")
-            self._reset_btn()
+                self.chat_history.append({
+                    "tool_call_id": tc["id"],
+                    "role": "tool",
+                    "name": fn_name,
+                    "content": str(res)
+                })
 
-    def _on_api_error(self, err_msg: str):
+            self.history_browser.append("<i style='color:#94a3b8; font-size:11px'>💡 [本地进程]: 正在生成最终报告...</i>")
+            self._request_backend_copilot()
+
+    def _on_copilot_finished(self):
+        if self._current_assistant_reply:
+            self.chat_history.append({"role": "assistant", "content": self._current_assistant_reply})
+        self._reset_btn()
+
+    def _on_copilot_error(self, err_msg: str):
         self.history_browser.append(f"<br><b style='color:red'>❌ 无法获取 AI 回复:</b> {err_msg}")
         self._reset_btn()
 
+    def _scroll_to_bottom(self):
+        self.history_browser.verticalScrollBar().setValue(self.history_browser.verticalScrollBar().maximum())
+
     def _reset_btn(self):
-        """复原按钮状态"""
         self.send_btn.setEnabled(True)
         self.send_btn.setText("🚀 发送")
         self.stop_btn.setEnabled(False)
         self._llm_task = None
-        self.history_browser.verticalScrollBar().setValue(self.history_browser.verticalScrollBar().maximum())
+        self._scroll_to_bottom()
 
     def _execute_local_skill(self, fn_name: str, args: dict) -> str:
-        """主线程执行本地 GIS/遥感运算或调用云端 AI 任务"""
+        """分发并运行具体的 GIS 算子或云端 AI 任务"""
         from .llm_skills import (
             get_active_layers, skill_calc_spectral_index, skill_run_pca,
             skill_dem_analysis, skill_spatial_filter, skill_area_statistics,
             skill_vector_smooth, skill_kmeans_cluster, skill_raster_diff,
             skill_image_enhance, skill_raster_polygonize,
             skill_ai_extract_feature, skill_ai_sam3_extract, skill_ai_change_detection,
-            skill_geocode_address
+            skill_geocode_address, qgis_search_tools, qgis_get_tool_params, qgis_run_algorithm
         )
 
         server_url = self.dock.current_server_url()
@@ -2132,16 +2122,13 @@ class LlmCopilotWidget(QWidget):
         elif fn_name == "skill_geocode_address":
             return skill_geocode_address(**args)
         elif fn_name == "qgis_search_tools":
-            from .llm_skills import qgis_search_tools
             return qgis_search_tools(**args)
         elif fn_name == "qgis_get_tool_params":
-            from .llm_skills import qgis_get_tool_params
             return qgis_get_tool_params(**args)
         elif fn_name == "qgis_run_algorithm":
-            from .llm_skills import qgis_run_algorithm
             return qgis_run_algorithm(**args)
 
-        # AI 云端大模型异步任务
+        # AI 云端大模型异步任务派发
         elif fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
             canvas = self.dock.canvas
             extent = canvas.extent()
@@ -2155,7 +2142,7 @@ class LlmCopilotWidget(QWidget):
                     )
                 elif fn_name == "skill_ai_sam3_extract":
                     task = skill_ai_sam3_extract(
-                        args.get("layer_name"), args.get("prompt"), args.get("output_format"),
+                        args.get("layer_name"), args.get("prompt"), args.get("output_format", "mask"),
                         server_url, token, machine_id, extent=extent, extent_crs=extent_crs
                     )
                 else:
@@ -2164,7 +2151,7 @@ class LlmCopilotWidget(QWidget):
                         server_url, token, machine_id, extent=extent, extent_crs=extent_crs
                     )
             except Exception as e:
-                return f"提交云端任务失败: {e}"
+                return f"提交云端解译任务失败: {e}"
 
             self._active_ai_task = task
             self.stop_btn.setEnabled(True)
@@ -2177,10 +2164,9 @@ class LlmCopilotWidget(QWidget):
                 lambda: self.history_browser.append("<i style='color:#dc2626'>⚠️ 云端任务已取消</i>")
             )
             QgsApplication.taskManager().addTask(task)
-            return "已成功向云端投递提取任务，正在后台处理，完成后会自动加载结果图层。"
+            return "已成功向云端 GPU 集群投递解译任务，正在后台处理中..."
 
-        else:
-            return f"找不到该工具函数: {fn_name}"
+        return f"未找到可执行工具: {fn_name}"
 
     def _on_ai_task_ok(self, result_path, content_type):
         from datetime import datetime
@@ -2192,14 +2178,14 @@ class LlmCopilotWidget(QWidget):
 
         if new_layer.isValid():
             QgsProject.instance().addMapLayer(new_layer)
-            self.history_browser.append(f"<b style='color:#16a34a'>✅ 云端任务完成，已加载图层: {layer_name}</b>")
+            self.history_browser.append(f"<b style='color:#16a34a'>✅ 云端解译完成，已自动加载图层: {layer_name}</b>")
         else:
             self.history_browser.append("<b style='color:red'>❌ 结果图层加载失败</b>")
         self._active_ai_task = None
         self._reset_btn()
 
     def _on_ai_task_error(self, err_msg):
-        self.history_browser.append(f"<b style='color:red'>❌ 云端任务失败:</b> {err_msg}")
+        self.history_browser.append(f"<b style='color:red'>❌ 云端解译失败:</b> {err_msg}")
         self._active_ai_task = None
         self._reset_btn()
 

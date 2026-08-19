@@ -1,109 +1,88 @@
 # -*- coding: utf-8 -*-
 """
-GeoMind AI Copilot – DeepSeek 版（增强调试）
+llm_agent.py - QGIS 前端与后端通信 Task
 """
-import os
-import traceback
+import json
+import requests
 from qgis.core import QgsTask
 from qgis.PyQt.QtCore import pyqtSignal
 
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
 
+class BackendCopilotTask(QgsTask):
+    chunkReceived = pyqtSignal(dict)
+    taskFinished = pyqtSignal()
+    taskError = pyqtSignal(str)
 
-class LlmApiTask(QgsTask):
-    apiFinished = pyqtSignal(object)
-    apiError = pyqtSignal(str)
-    apiProgress = pyqtSignal(str)
-
-    def __init__(self, payload: dict, api_url: str, api_key: str):
-        super().__init__("LLM 网络通信中...", QgsTask.CanCancel)
-        self.payload = payload
-        self.api_url = (api_url or "https://api.deepseek.com").strip()
-        self.api_key = (api_key or os.environ.get("DEEPSEEK_API_KEY", "")).strip()
-        self.response_msg = None
-        self.error_msg = None
+    def __init__(self, server_url: str, token: str, messages: list, active_layers: list, machine_id: str = ""):
+        super().__init__("GeoMind Copilot 通信中...", QgsTask.CanCancel)
+        self.server_url = server_url.rstrip('/')
+        self.token = token
+        self.messages = messages
+        self.active_layers = active_layers
+        self.machine_id = machine_id  # 👈 声明并保存 machine_id
+        self._resp = None
 
     def run(self) -> bool:
+        url = f"{self.server_url}/api/v1/copilot/chat"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "messages": self.messages,
+            "active_layers": self.active_layers,
+            "machine_id": self.machine_id or ""
+        }
+
         try:
-            self.apiProgress.emit("🔍 检查 openai 库...")
-            if not OPENAI_AVAILABLE:
-                self.error_msg = "未安装 openai 库！请在 QGIS 的 Python 环境执行：pip install openai"
+            self._resp = requests.post(url, json=payload, headers=headers, stream=True, timeout=60)
+            if self._resp.status_code == 401:
+                self.taskError.emit("登录已过期，请重新登录后再试")
+                return False
+            if self._resp.status_code == 402:
+                self.taskError.emit("今日免费额度已用完，请升级会员或联系作者")
+                return False
+            if self._resp.status_code != 200:
+                try:
+                    err_detail = self._resp.json().get('detail', self._resp.text)
+                except Exception:
+                    err_detail = self._resp.text
+                self.taskError.emit(f"服务异常 ({self._resp.status_code}): {err_detail}")
                 return False
 
-            self.apiProgress.emit(f"🔑 API Key 状态: {'已配置' if self.api_key else '❌ 空！'}")
-            if not self.api_key:
-                self.error_msg = "DeepSeek API Key 为空！请到【设置】页填写，或设置环境变量 DEEPSEEK_API_KEY"
-                return False
+            for line in self._resp.iter_lines(decode_unicode=True):
+                if self.isCanceled():
+                    return False
+                if not line or not line.startswith("data: "):
+                    continue
 
-            self.apiProgress.emit(f"🔗 连接地址: {self.api_url}")
+                data_str = line[6:].strip()
+                if data_str == "[DONE]":
+                    break
 
-            client = OpenAI(
-                api_key=self.api_key,
-                base_url=self.api_url,
-                timeout=60.0
-            )
-
-            model = self.payload.get("model", "deepseek-v4-pro")
-            messages = self.payload.get("messages", [])
-            tools = self.payload.get("tools")
-            tool_choice = self.payload.get("tool_choice")
-
-            # # 强制把模型改成 DeepSeek 真正支持的名称（防止用户填了不存在的 v4-flash）
-            # if "v4" in model or "flash" in model:
-            #     model = "deepseek-chat"
-            #     self.apiProgress.emit(f"⚠️ 模型名已自动修正为: {model}")
-
-            self.apiProgress.emit(f"📡 正在请求 DeepSeek（model={model}）...")
-
-            kwargs = {
-                "model": model,
-                "messages": messages,
-                "stream": False,
-            }
-            if tools is not None:
-                kwargs["tools"] = tools
-                if tool_choice is not None:
-                    kwargs["tool_choice"] = tool_choice
-
-            response = client.chat.completions.create(**kwargs)
-
-            self.apiProgress.emit("✅ 收到响应，正在解析...")
-
-            msg = response.choices[0].message
-            self.response_msg = {
-                "role": msg.role,
-                "content": msg.content or "",
-            }
-
-            # 思考过程（如果有）
-            if hasattr(msg, "reasoning_content") and msg.reasoning_content:
-                self.response_msg["reasoning_content"] = msg.reasoning_content
-
-            # 工具调用
-            if getattr(msg, "tool_calls", None):
-                self.response_msg["tool_calls"] = []
-                for tc in msg.tool_calls:
-                    self.response_msg["tool_calls"].append({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        }
-                    })
+                try:
+                    data = json.loads(data_str)
+                    self.chunkReceived.emit(data)
+                except Exception:
+                    continue
 
             return True
 
         except Exception as e:
-            self.error_msg = f"DeepSeek 调用失败:\n{str(e)}\n\n{traceback.format_exc()}"
+            self.taskError.emit(f"连接服务器失败: {str(e)}")
             return False
+        finally:
+            if self._resp:
+                self._resp.close()
 
     def finished(self, result: bool):
-        if result and self.response_msg is not None:
-            self.apiFinished.emit(self.response_msg)
-        else:
-            self.apiError.emit(self.error_msg or "未知错误")
+        if result:
+            self.taskFinished.emit()
+
+    def cancel(self):
+        super().cancel()
+        if self._resp:
+            try:
+                self._resp.close()
+            except Exception:
+                pass
