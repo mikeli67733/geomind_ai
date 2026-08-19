@@ -9,7 +9,7 @@ import requests
 # 配置源列表：优先使用国内能直连的加速代理，备用 GitHub 官方 Raw
 REMOTE_CONFIG_URLS = [
     # 方案 B：GitHub 官方 Raw 直链
-    "https://api.npoint.io/73f56594195f39efc03d",
+    "https://m1.apifoxmock.com/m1/8731923-8518910-default/config",
 ]
 
 # FALLBACK_SERVER_URL = "https://application-showed-revolutionary-flooring.trycloudflare.com"
