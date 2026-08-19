@@ -2032,11 +2032,14 @@ class LlmCopilotWidget(QWidget):
         # 3. 工具调用 (Tool Call)
         elif msg_type == "tool_call":
             tool_calls = data.get("tool_calls", [])
+            # 记录 assistant 的 tool_calls 消息
             self.chat_history.append({
                 "role": "assistant",
                 "content": self._current_assistant_reply or None,
                 "tool_calls": tool_calls
             })
+            # 🌟 关键：立即清空暂存，防止 _on_copilot_finished 重复追加残缺消息
+            self._current_assistant_reply = ""
 
             for tc in tool_calls:
                 fn_name = tc["function"]["name"]
@@ -2053,6 +2056,7 @@ class LlmCopilotWidget(QWidget):
 
                 self.history_browser.append(f"<i style='color:#059669; font-size:12px'>✅ [执行结果]: {res}</i>")
 
+                # 记录一一对应的 tool 响应
                 self.chat_history.append({
                     "tool_call_id": tc["id"],
                     "role": "tool",
@@ -2066,6 +2070,7 @@ class LlmCopilotWidget(QWidget):
     def _on_copilot_finished(self):
         if self._current_assistant_reply:
             self.chat_history.append({"role": "assistant", "content": self._current_assistant_reply})
+            self._current_assistant_reply = ""
         self._reset_btn()
 
     def _on_copilot_error(self, err_msg: str):
