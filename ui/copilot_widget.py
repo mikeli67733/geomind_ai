@@ -6,7 +6,7 @@ Features:
 - Markdown rich-text rendering
 - Collapsible Reasoning (auto-collapses on text output)
 - Collapsible Tool Execution Progress
-- DeepSeek/R1 thinking mode compliance (reasoning_content preservation)
+- DeepSeek/R1 thinking mode compliance (strict reasoning_content round-trip & history auto-sanitization)
 - Robust streaming HTML rendering without syntax breakage
 """
 import html
@@ -148,7 +148,7 @@ class LlmCopilotWidget(QWidget):
         # -- 会话浏览区 (使用 QTextBrowser 支持交互式点击折叠) --
         self.history_browser = QTextBrowser()
         self.history_browser.setReadOnly(True)
-        self.history_browser.setOpenLinks(False)  # 拦截链接点击事件
+        self.history_browser.setOpenLinks(False)
         self.history_browser.anchorClicked.connect(self._on_anchor_clicked)
         self.history_browser.setStyleSheet(CHAT_HISTORY_QSS)
         layout.addWidget(self.history_browser, stretch=1)
@@ -239,10 +239,9 @@ class LlmCopilotWidget(QWidget):
     def _on_anchor_clicked(self, url: QUrl):
         link = url.toString()
         if link.startswith("toggle:"):
-            # 格式: toggle:reasoning:msg_id 或 toggle:tools:msg_id
             parts = link.split(":")
             if len(parts) >= 3:
-                target_type = parts[1]  # 'reasoning' 或 'tools'
+                target_type = parts[1]
                 msg_id = parts[2]
                 for item in self.display_items:
                     if item.get("id") == msg_id:
@@ -258,7 +257,6 @@ class LlmCopilotWidget(QWidget):
     # -- 核心 UI 渲染引擎 ----------------------------------------------------
 
     def _render_chat_ui(self, preserve_scroll: bool = False):
-        """将 display_items 全部渲染为美观、自闭合、可交互的 HTML。"""
         sb = self.history_browser.verticalScrollBar()
         old_val = sb.value()
         is_at_bottom = (old_val >= sb.maximum() - 20)
@@ -278,7 +276,6 @@ class LlmCopilotWidget(QWidget):
             role = item["role"]
             item_id = item["id"]
 
-            # 1. 用户提问气泡
             if role == "user":
                 safe_text = html.escape(item["content"]).replace("\n", "<br>")
                 html_blocks.append(
@@ -288,7 +285,6 @@ class LlmCopilotWidget(QWidget):
                     f"{safe_text}</div>"
                 )
 
-            # 2. 系统/错误提示
             elif role == "system_error":
                 safe_text = html.escape(item["content"])
                 html_blocks.append(
@@ -296,7 +292,6 @@ class LlmCopilotWidget(QWidget):
                     f"<span style='background:#fef2f2; color:#dc2626; border:1px solid #fecaca; padding:3px 8px; font-size:11px; font-weight:600;'>⚠️ {safe_text}</span></div>"
                 )
 
-            # 3. Assistant 综合回复卡片 (含思考折叠 + 工具进度折叠 + 回复正文)
             elif role == "assistant":
                 sub_blocks = []
 
@@ -375,7 +370,6 @@ class LlmCopilotWidget(QWidget):
                 if sub_blocks:
                     html_blocks.append("".join(sub_blocks))
 
-        # 批量注入富文本视图
         self.history_browser.setHtml("".join(html_blocks))
 
         if preserve_scroll and not is_at_bottom:
@@ -423,6 +417,24 @@ class LlmCopilotWidget(QWidget):
             self._render_chat_ui()
             self._reset_btn()
 
+    # -- 核心：DeepSeek 历史上下文强力清洗器 --------------------------------
+
+    def _sanitize_chat_history(self):
+        """
+        扫描修补历史消息中所有遗留的 assistant 条目，
+        确保任何带 tool_calls 的消息必定含有 reasoning_content，
+        彻底清除之前因断连/旧逻辑导致的 400 坏数据。
+        """
+        for msg in self.chat_history:
+            if msg.get("role") == "assistant":
+                if "tool_calls" in msg:
+                    # 必须要有非空的 reasoning_content 字符串
+                    if not msg.get("reasoning_content"):
+                        msg["reasoning_content"] = "Thinking and preparing tool execution..."
+                else:
+                    if "reasoning_content" in msg and msg["reasoning_content"] is None:
+                        msg["reasoning_content"] = ""
+
     # -- 消息收发与大模型交互 ------------------------------------------------
 
     def _send_msg(self):
@@ -449,17 +461,15 @@ class LlmCopilotWidget(QWidget):
 
         self.input_edit.clear()
 
-        # 记录用户消息
         user_msg_id = f"user_{time.time()}"
         self.display_items.append({"id": user_msg_id, "role": "user", "content": text})
         self.chat_history.append({"role": "user", "content": text})
 
-        # 初始化当前 Assistant 回复项
         self._current_assistant_item = {
             "id": f"asst_{time.time()}",
             "role": "assistant",
             "reasoning": "",
-            "reasoning_collapsed": False,  # 思考生成时展开
+            "reasoning_collapsed": False,
             "tools": [],
             "tools_collapsed": False,
             "content": "",
@@ -497,6 +507,9 @@ class LlmCopilotWidget(QWidget):
         return False, ""
 
     def _request_backend_copilot(self):
+        # 1. 发送前先进行 DeepSeek 协议强力修复
+        self._sanitize_chat_history()
+
         active_layers = [l.name() for l in QgsProject.instance().mapLayers().values()]
         server_url = self.dock.current_server_url()
         token = self.dock.token
@@ -524,36 +537,32 @@ class LlmCopilotWidget(QWidget):
             self._reset_btn()
             return
 
-        # 收到模型推理/思考过程
         elif msg_type == "reasoning" and content:
             self._current_assistant_item["reasoning"] += content
             self._render_chat_ui()
 
-        # 收到正文流式 chunk
         elif msg_type == "text" and content:
-            # 当第一次从思考切到正文时，自动将思考过程折叠起来
             if not self._current_assistant_item["content"] and self._current_assistant_item["reasoning"]:
                 self._current_assistant_item["reasoning_collapsed"] = True
 
             self._current_assistant_item["content"] += content
             self._render_chat_ui()
 
-        # 收到工具调用指令
         elif msg_type == "tool_call":
             tool_calls = data.get("tool_calls", [])
 
-            # --- 关键修复：组装 assistant 历史，必须包含 reasoning_content ---
+            # --- 强制填充 reasoning_content，即使为空也给占位，满足 API 约束 ---
+            reasoning_val = self._current_assistant_item.get("reasoning")
+            if not reasoning_val:
+                reasoning_val = "Thinking and analyzing tool selection..."
+
             asst_msg = {
                 "role": "assistant",
                 "content": self._current_assistant_item.get("content") or None,
                 "tool_calls": tool_calls,
+                "reasoning_content": reasoning_val,
             }
-            # 如果模型在调用工具前有思考过程，必须回传给 API (DeepSeek/R1 接口规范)
-            if self._current_assistant_item and self._current_assistant_item.get("reasoning"):
-                asst_msg["reasoning_content"] = self._current_assistant_item["reasoning"]
-
             self.chat_history.append(asst_msg)
-            # -------------------------------------------------------------
 
             for tc in tool_calls:
                 fn_name = tc["function"]["name"]
@@ -586,7 +595,7 @@ class LlmCopilotWidget(QWidget):
                 })
                 self._render_chat_ui()
 
-            # 发起下一轮后端总结请求
+            # 递归请求大模型输出后续分析
             self._request_backend_copilot()
 
     def _on_copilot_finished(self):
@@ -598,7 +607,6 @@ class LlmCopilotWidget(QWidget):
                     "role": "assistant",
                     "content": content
                 }
-                # 带上思考过程，保证后续多轮对话不会因缺失 reasoning_content 报 400
                 if reasoning:
                     asst_msg["reasoning_content"] = reasoning
                 self.chat_history.append(asst_msg)
@@ -647,7 +655,6 @@ class LlmCopilotWidget(QWidget):
         if fn_name in local_tools:
             return local_tools[fn_name](**args)
 
-        # 云端 AI 深度学习解译任务
         if fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
             canvas = self.dock.canvas
             extent = canvas.extent()
