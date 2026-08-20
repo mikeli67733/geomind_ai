@@ -4,12 +4,11 @@ plugin_id=geomind_ai
 qgisMinimumVersion=3.16
 description=基于 AI 大模型的遥感影像智能解译插件：AI Copilot 自然语言对话、10 大本地免费遥感/GIS 工具、8 大深度解译模型（SAM3/土地利用/变化检测/专项地物提取）
 about=GeoMind AI 将 AI Copilot 自然语言交互与专业遥感解译能力整合到 QGIS 中。内置 10 大本地免费工具（光谱指数、PCA、DEM 分析、空间滤波、面积统计、K-Means 聚类、变化检测、矢量化等）与 8 大 AI 深度解译模型，支持账号体系、套餐配额管理与云端算法服务对接。需登录云端使用，提供每日 20 次免费体验、包月会员及私有化/算法定制服务。
-version=5.0
+version=3.7
 author=Mike Li
 email=mikeli785857@gmail.com
 
-changelog=5.0：架构级升级——配置系统懒加载（导入期不再发网络请求，统一配置源链 QSettings > server_config.json > 远程 > 兜底）；新增统一 HTTP 客户端层（指数退避重试/统一超时/Token 注入/错误归一化，全部网络调用迁移）；10 大本地工具页拆分为独立模块并引入页面注册表工厂；Dock 生命周期状态持久化（重启 QGIS 恢复可见性/位置/当前页）；抽取零依赖纯算法核 core/algos.py 并搭建 pytest 测试体系与 pyproject.toml（ruff+pytest）；CI 增加 lint+test 步骤。
-4.0：专业级架构重构——按 core/api/tasks/ui/tools/utils 六层包结构拆分原单文件代码；新增统一日志系统、领域异常体系（登录过期/配额耗尽/任务取消等）、PyQt5/6 兼容层；消除光谱指数等 9 类栅格算法与矢量化简的重复实现；移除硬编码第三方 API 密钥（改为环境变量）；界面文案专业化、统一 QSS 主题。
+changelog=3.7：解决了一些问题。
 
 homepage=https://github.com/mikeli67733/geomind_ai
 repository=https://github.com/mikeli67733/geomind_ai

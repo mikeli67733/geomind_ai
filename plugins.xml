@@ -13,7 +13,7 @@
     <category>Raster</category>
     <experimental>False</experimental>
     <deprecated>False</deprecated>
-    <changelog><![CDATA[5.0：架构级升级——配置懒加载（导入期零网络请求，统一配置源链）；统一 HTTP 客户端层（重试/超时/Token/错误归一化）；10 大本地工具页拆分为独立模块 + 页面注册表；Dock 状态持久化（重启恢复）；纯算法核 core/algos.py + pytest 测试体系；CI 增加 lint+test。]]></changelog>
+    <changelog><![CDATA[3.7：解决一些问题。]]></changelog>
     <tags>remote sensing,sam3,ai,interpretation,copilot,raster,vector,landuse,change detection</tags>
   </pyqgis_plugin>
 </plugins>
