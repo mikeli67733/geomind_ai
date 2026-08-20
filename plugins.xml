@@ -1,6 +1,6 @@
 <?xml version = "1.0" encoding = "UTF-8"?>
 <plugins>
-  <pyqgis_plugin name="GeoMind AI" version="5.0" plugin_id="geomind_ai">
+  <pyqgis_plugin name="GeoMind AI" version="3.7" plugin_id="geomind_ai">
     <description><![CDATA[基于 AI 大模型的遥感影像智能解译插件：AI Copilot 自然语言对话、10 大本地免费遥感/GIS 工具、8 大深度解译模型（SAM3/土地利用/变化检测/专项地物提取）]]></description>
     <about><![CDATA[GeoMind AI 将 AI Copilot 自然语言交互与专业遥感解译能力整合到 QGIS 中。内置 10 大本地免费工具与 8 大 AI 深度解译模型，支持账号体系、套餐配额管理与云端算法服务对接。需登录云端使用，提供每日 20 次免费体验、包月会员及私有化/算法定制服务。]]></about>
     <version>3.7</version>
