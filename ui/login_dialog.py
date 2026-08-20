@@ -1,32 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-用户名/密码登录、注册与修改密码对话框。
-
-成功后通过 loggedIn 信号把 (username, token) 传给外部（dockwidget），
-由外部负责持久化到 QSettings 并刷新账号状态面板。
+Login, registration, and password change dialog.
 """
-
 import re
+
 from qgis.PyQt.QtCore import pyqtSignal
 from qgis.PyQt.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
-    QPushButton, QTabWidget, QWidget, QMessageBox
+    QPushButton, QTabWidget, QWidget, QMessageBox,
 )
 
-from .auth_client import GeoMindAuthClient, AuthApiError
-from .machine_id import get_machine_id  # 👈 导入机器码生成模块
+from ..api.auth_client import GeoMindAuthClient, AuthApiError
+from ..utils.machine_id import get_machine_id
 
 
 class LoginDialog(QDialog):
+    """Dialog for login, registration, and password management."""
 
     loggedIn = pyqtSignal(str, str)  # (username, access_token)
 
     def __init__(self, server_url_provider, token: str = "", username: str = "", parent=None):
-        """
-        server_url_provider: 一个无参可调用对象，返回当前填写的服务地址字符串。
-        token: 已登录用户的 token（若传入则开启修改密码功能）
-        username: 当前已登录用户名
-        """
         super().__init__(parent)
         self.setWindowTitle("账号管理 - GeoMind AI")
         self.setMinimumWidth(340)
@@ -37,15 +30,11 @@ class LoginDialog(QDialog):
 
     def _build_ui(self):
         layout = QVBoxLayout()
-
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_login_tab(), "登录")
         self.tabs.addTab(self._build_register_tab(), "注册新账号")
-
-        # 若已登录状态下打开弹窗，增加“修改密码”页签
         if self._token:
             self.tabs.addTab(self._build_change_pwd_tab(), "修改密码")
-
         layout.addWidget(self.tabs)
         self.setLayout(layout)
 
@@ -56,7 +45,6 @@ class LoginDialog(QDialog):
         self.login_username_edit = QLineEdit()
         if self._username:
             self.login_username_edit.setText(self._username)
-
         self.login_password_edit = QLineEdit()
         self.login_password_edit.setEchoMode(QLineEdit.Password)
         form.addRow("用户名:", self.login_username_edit)
@@ -82,10 +70,9 @@ class LoginDialog(QDialog):
         self.reg_username_edit.setPlaceholderText("3-32位字母/数字/下划线")
         self.reg_password_edit = QLineEdit()
         self.reg_password_edit.setEchoMode(QLineEdit.Password)
-        self.reg_password_edit.setPlaceholderText("至少8位，须包含字母和数字")  # 👈 提示更新为 8 位
+        self.reg_password_edit.setPlaceholderText("至少8位，须包含字母和数字")
         self.reg_password_confirm_edit = QLineEdit()
         self.reg_password_confirm_edit.setEchoMode(QLineEdit.Password)
-
         form.addRow("用户名:", self.reg_username_edit)
         form.addRow("密码:", self.reg_password_edit)
         form.addRow("确认密码:", self.reg_password_confirm_edit)
@@ -112,14 +99,11 @@ class LoginDialog(QDialog):
 
         self.old_pwd_edit = QLineEdit()
         self.old_pwd_edit.setEchoMode(QLineEdit.Password)
-
         self.new_pwd_edit = QLineEdit()
         self.new_pwd_edit.setEchoMode(QLineEdit.Password)
         self.new_pwd_edit.setPlaceholderText("至少8位，须包含字母和数字")
-
         self.confirm_new_pwd_edit = QLineEdit()
         self.confirm_new_pwd_edit.setEchoMode(QLineEdit.Password)
-
         form.addRow("原密码:", self.old_pwd_edit)
         form.addRow("新密码:", self.new_pwd_edit)
         form.addRow("确认新密码:", self.confirm_new_pwd_edit)
@@ -135,11 +119,10 @@ class LoginDialog(QDialog):
         tab.setLayout(outer)
         return tab
 
-    def _current_server_url(self) -> str:
-        return (self._server_url_provider() or "").strip()
+    # -- Validation ---------------------------------------------------------
 
-    def _validate_password_frontend(self, password: str, username: str = "") -> str:
-        """前端预校验密码复杂度"""
+    @staticmethod
+    def _validate_password(password: str, username: str = "") -> str:
         if len(password) < 8:
             return "密码长度不能少于 8 个字符"
         if not (re.search(r"[a-zA-Z]", password) and re.search(r"\d", password)):
@@ -148,25 +131,26 @@ class LoginDialog(QDialog):
             return "密码不能与用户名相同"
         return ""
 
+    def _current_server_url(self) -> str:
+        return (self._server_url_provider() or "").strip()
+
+    # -- Actions ------------------------------------------------------------
+
     def _do_login(self):
         server_url = self._current_server_url()
         username = self.login_username_edit.text().strip()
         password = self.login_password_edit.text()
-
         if not server_url:
             QMessageBox.warning(self, "提示", "请先填写服务地址")
             return
         if not username or not password:
             QMessageBox.warning(self, "提示", "请输入用户名和密码")
             return
-
-        client = GeoMindAuthClient(server_url)
         try:
-            result = client.login(username, password)
+            result = GeoMindAuthClient(server_url).login(username, password)
         except AuthApiError as e:
             QMessageBox.critical(self, "登录失败", str(e))
             return
-
         self.loggedIn.emit(result["username"], result["access_token"])
         self.accept()
 
@@ -175,7 +159,6 @@ class LoginDialog(QDialog):
         username = self.reg_username_edit.text().strip()
         password = self.reg_password_edit.text()
         confirm = self.reg_password_confirm_edit.text()
-
         if not server_url:
             QMessageBox.warning(self, "提示", "请先填写服务地址")
             return
@@ -185,24 +168,16 @@ class LoginDialog(QDialog):
         if password != confirm:
             QMessageBox.warning(self, "提示", "两次输入的密码不一致")
             return
-
-        # 1. 前端先做一层弱密码校验
-        err_msg = self._validate_password_frontend(password, username)
+        err_msg = self._validate_password(password, username)
         if err_msg:
             QMessageBox.warning(self, "密码格式不符合要求", err_msg)
             return
-
-        # 2. 获取本机设备 ID
         machine_id = get_machine_id()
-
-        client = GeoMindAuthClient(server_url)
         try:
-            # 3. 提交注册时附带 machine_id
-            result = client.register(username, password, machine_id)
+            result = GeoMindAuthClient(server_url).register(username, password, machine_id)
         except AuthApiError as e:
             QMessageBox.critical(self, "注册失败", str(e))
             return
-
         QMessageBox.information(self, "注册成功", "已自动登录，欢迎使用 GeoMind AI！")
         self.loggedIn.emit(result["username"], result["access_token"])
         self.accept()
@@ -212,22 +187,18 @@ class LoginDialog(QDialog):
         old_pwd = self.old_pwd_edit.text()
         new_pwd = self.new_pwd_edit.text()
         confirm_pwd = self.confirm_new_pwd_edit.text()
-
         if not old_pwd or not new_pwd:
             QMessageBox.warning(self, "提示", "请输入原密码和新密码")
             return
         if new_pwd != confirm_pwd:
             QMessageBox.warning(self, "提示", "两次输入的新密码不一致")
             return
-
-        err_msg = self._validate_password_frontend(new_pwd)
+        err_msg = self._validate_password(new_pwd)
         if err_msg:
             QMessageBox.warning(self, "新密码格式不符合要求", err_msg)
             return
-
-        client = GeoMindAuthClient(server_url, token=self._token)
         try:
-            res = client.change_password(old_pwd, new_pwd)
+            res = GeoMindAuthClient(server_url, token=self._token).change_password(old_pwd, new_pwd)
             QMessageBox.information(self, "修改成功", res.get("message", "密码修改成功！"))
             self.accept()
         except AuthApiError as e:

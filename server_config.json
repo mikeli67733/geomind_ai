@@ -1,3 +1,4 @@
 {
-  "server_url": "https://baidu.com"
+  "server_url": "",
+  "_note": "Local server URL override. Not consumed by code: URL resolution is handled in core/constants.py via REMOTE_CONFIG_URLS (remote fetch) and FALLBACK_SERVER_URL (local fallback). Leave empty to use the built-in resolution chain."
 }

@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# CI-friendly: hide the plugin log noise emitted by core.logger
+log_cli = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+extend-exclude = ["_archive_legacy", "__pycache__", "build", ".git", ".workbuddy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]

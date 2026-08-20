@@ -20,6 +20,13 @@ jobs:
         with:
           python-version: '3.10'
 
+      # 0. 静态检查 + 单元测试（不依赖 QGIS，仅 core/api 纯逻辑）
+      - name: Lint & Test
+        run: |
+          pip install --quiet pytest ruff numpy requests
+          ruff check core/ api/ utils/ tools/ tasks/ ui/ tests/ --ignore E501 || true
+          python -m pytest tests/ -q --no-header -p no:cacheprovider
+
       # 1. 自动打 zip 包（排除开发文件、数据库、私钥等敏感文件）
       - name: Create Plugin Zip
         run: |
