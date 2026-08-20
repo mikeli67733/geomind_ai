@@ -9,6 +9,7 @@ Features:
 - DeepSeek/R1 thinking mode compliance (strict reasoning_content round-trip & history auto-sanitization)
 - Round-scoped buffer separation for multi-step tool call round-trips
 - Dynamic pulsing & simulated progress bar for asynchronous background tasks
+- On-demand extent guard triggered ONLY when interpretation tasks are executed
 - Robust streaming HTML rendering without syntax breakage
 """
 import html
@@ -113,7 +114,7 @@ class LlmCopilotWidget(QWidget):
         self._current_assistant_item = None
         self._current_progress_item_id = None
 
-        # 进度条呼吸律动定时器
+        # 进度条呼吸律动与动态步进定时器
         self._progress_timer = QTimer(self)
         self._progress_timer.setInterval(500)
         self._progress_timer.timeout.connect(self._on_progress_timer_tick)
@@ -154,7 +155,7 @@ class LlmCopilotWidget(QWidget):
         top_bar.addStretch()
         layout.addLayout(top_bar)
 
-        # -- 会话浏览区 (使用 QTextBrowser 支持交互式点击折叠) --
+        # -- 会话浏览区 --
         self.history_browser = QTextBrowser()
         self.history_browser.setReadOnly(True)
         self.history_browser.setOpenLinks(False)
@@ -299,8 +300,6 @@ class LlmCopilotWidget(QWidget):
                 status_text = item.get("status_text", "正在处理中...")
                 icon = item.get("icon", "⚡")
                 pct = max(0, min(100, int(progress)))
-                
-                # 动态条纹脉冲感
                 html_blocks.append(
                     "<div style='background-color:#f0fdf4; border:1px solid #bbf7d0; border-left:3px solid #16a34a; "
                     "padding:10px 12px; margin:8px 0; font-size:12px; line-height:1.5;'>"
@@ -473,19 +472,7 @@ class LlmCopilotWidget(QWidget):
             self.dock.show_account_page()
             return
 
-        too_large, guard_msg = self._check_canvas_extent_too_large()
-        if too_large:
-            self.display_items.append({"id": f"guard_{time.time()}", "role": "system_error", "content": guard_msg})
-            self._render_chat_ui()
-            reply = QMessageBox.question(
-                self, "屏幕范围过大",
-                f"{guard_msg}\n\n是否仍要发送本条消息？\n"
-                "普通问答可继续；若涉及裁图/解译任务仍会被安全拦截。",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-
+        # 日常普通对话不作范围拦截，直接发送
         self.input_edit.clear()
 
         user_msg_id = f"user_{time.time()}"
@@ -510,30 +497,6 @@ class LlmCopilotWidget(QWidget):
         self.send_btn.setText("思考中...")
         self.stop_btn.setEnabled(True)
         self._request_backend_copilot()
-
-    def _check_canvas_extent_too_large(self):
-        from ..utils.extent_guard import check_extent_too_large
-
-        canvas = getattr(self.dock, "canvas", None)
-        iface = getattr(self.dock, "iface", None)
-        if canvas is None or iface is None:
-            return False, ""
-        try:
-            extent = canvas.extent()
-            extent_crs = canvas.mapSettings().destinationCrs()
-        except Exception:
-            return False, ""
-
-        active = iface.activeLayer()
-        candidates = [active] if isinstance(active, QgsRasterLayer) else [
-            layer for layer in QgsProject.instance().mapLayers().values()
-            if isinstance(layer, QgsRasterLayer)
-        ]
-        for layer in candidates:
-            too_large, msg = check_extent_too_large(layer, extent, extent_crs)
-            if too_large:
-                return True, msg
-        return False, ""
 
     def _request_backend_copilot(self):
         self._sanitize_chat_history()
@@ -666,6 +629,7 @@ class LlmCopilotWidget(QWidget):
             skill_ai_extract_feature, skill_ai_sam3_extract, skill_ai_change_detection,
             skill_geocode_address, qgis_search_tools, qgis_get_tool_params, qgis_run_algorithm,
         )
+        from ..utils.extent_guard import check_extent_too_large
 
         server_url = self.dock.current_server_url()
         token = self.dock.token
@@ -692,10 +656,34 @@ class LlmCopilotWidget(QWidget):
         if fn_name in local_tools:
             return local_tools[fn_name](**args)
 
+        # 核心：仅在调用云端深度解译大模型时进行范围过大判定与拦截
         if fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
             canvas = self.dock.canvas
             extent = canvas.extent()
             extent_crs = canvas.mapSettings().destinationCrs()
+
+            # 提前基于目标图层进行范围超限校验
+            target_layer_name = args.get("layer_name") or args.get("layer_t1")
+            target_layer = None
+            if target_layer_name:
+                for l in QgsProject.instance().mapLayers().values():
+                    if l.name() == target_layer_name and isinstance(l, QgsRasterLayer):
+                        target_layer = l
+                        break
+
+            if target_layer is not None:
+                too_large, guard_msg = check_extent_too_large(target_layer, extent, extent_crs)
+                if too_large:
+                    self.display_items.append({
+                        "id": f"guard_{time.time()}",
+                        "role": "system_error",
+                        "content": f"解译范围过大已拦截：{guard_msg}"
+                    })
+                    self._render_chat_ui()
+                    return (
+                        f"已停止执行解译：当前地图视口范围过大（{guard_msg}）。"
+                        f"请明确告知用户：需要放大地图视图以聚焦解译区域，然后再重新尝试提取。"
+                    )
 
             try:
                 if fn_name == "skill_ai_extract_feature":
@@ -714,7 +702,13 @@ class LlmCopilotWidget(QWidget):
                         server_url, token, machine_id, extent=extent, extent_crs=extent_crs,
                     )
             except ExtentTooLargeError as e:
-                return f"已停止推送裁图与解译：{e}"
+                self.display_items.append({
+                    "id": f"guard_{time.time()}",
+                    "role": "system_error",
+                    "content": f"解译范围过大已拦截：{e}"
+                })
+                self._render_chat_ui()
+                return f"已停止推送裁图与解译：{e}。请提示用户放大地图后重试。"
             except Exception as e:
                 return f"提交云端解译任务失败: {e}"
 
