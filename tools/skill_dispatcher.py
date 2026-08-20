@@ -8,6 +8,8 @@ processing algorithm).
 """
 import os
 import json
+import requests
+from datetime import datetime, timedelta
 from typing import Optional
 
 from qgis.core import (
@@ -17,7 +19,14 @@ from qgis.core import (
     QgsMapLayer,
     QgsApplication,
     QgsProcessingParameterDefinition,
+    QgsCoordinateTransform,
+    QgsCoordinateReferenceSystem,
+    QgsFeature,
+    QgsGeometry,
+    QgsPointXY,
+    QgsField,
 )
+from qgis.PyQt.QtCore import QVariant
 from qgis.utils import iface
 
 from ..core.constants import (
@@ -39,8 +48,12 @@ from .raster_ops import (
     raster_polygonize,
 )
 from .vector_ops import vector_simplify_and_smooth
+import tempfile
+from osgeo import gdal
 
 logger = get_logger("tools.skill_dispatcher")
+
+STAC_API_URL = "https://earth-search.aws.element84.com/v1/search"
 
 
 # ===========================================================================
@@ -73,7 +86,7 @@ def get_active_layers() -> str:
 
 
 # ===========================================================================
-# 1. Geocoding
+# 1. Geocoding & Sentinel-2 STAC fetcher
 # ===========================================================================
 
 def skill_geocode_address(
@@ -81,12 +94,7 @@ def skill_geocode_address(
     lon: Optional[float] = None,
     lat: Optional[float] = None,
 ) -> str:
-    """
-    Geocode an address and zoom the QGIS canvas to the location.
-
-    For domestic addresses, uses the Tianditu API.
-    For international addresses, the LLM should provide lon/lat directly.
-    """
+    """Geocode an address and zoom the QGIS canvas to the location."""
     source_type = "天地图"
 
     try:
@@ -138,17 +146,6 @@ def skill_geocode_address(
             lon = float(location["lon"])
             lat = float(location["lat"])
 
-        # Create memory point layer
-        from qgis.core import (
-            QgsFeature,
-            QgsGeometry,
-            QgsPointXY,
-            QgsField,
-            QgsCoordinateTransform,
-            QgsCoordinateReferenceSystem,
-        )
-        from qgis.PyQt.QtCore import QVariant
-
         layer_name = f"定位_{address_text[:10]}"
         vlayer = QgsVectorLayer("Point?crs=EPSG:4326", layer_name, "memory")
         prov = vlayer.dataProvider()
@@ -167,7 +164,6 @@ def skill_geocode_address(
         vlayer.updateExtents()
         QgsProject.instance().addMapLayer(vlayer)
 
-        # Zoom canvas
         canvas = iface.mapCanvas()
         src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
         dest_crs = canvas.mapSettings().destinationCrs()
@@ -184,6 +180,222 @@ def skill_geocode_address(
         logger.error("Geocode failed: %s", e)
         return f"地址解析/定位失败: {e}"
 
+def search_and_load_sentinel2(
+    extent_bbox: list,
+    date_start: str = None,
+    date_end: str = None,
+    max_cloud_cover: int = 15,
+    auto_load_first: bool = True,
+    band_type: str = "4band"
+) -> str:
+    """
+    底层 AWS STAC 检索 + 精准按当前屏幕范围裁剪的虚拟 VRT 流式加载
+    """
+    today = datetime.now()
+    if not date_end:
+        date_end = today.strftime("%Y-%m-%d")
+    if not date_start:
+        date_start = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+
+    payload = {
+        "collections": ["sentinel-2-l2a"],
+        "bbox": extent_bbox,
+        "datetime": f"{date_start}T00:00:00Z/{date_end}T23:59:59Z",
+        "query": {"eo:cloud_cover": {"lt": max_cloud_cover}},
+        "limit": 5,
+        "sortby": [{"field": "properties.eo:cloud_cover", "direction": "asc"}]
+    }
+
+    try:
+        resp = requests.post(STAC_API_URL, json=payload, timeout=15)
+        if resp.status_code != 200:
+            return f"STAC 检索服务异常 (HTTP {resp.status_code})"
+
+        features = resp.json().get("features", [])
+        if not features:
+            return f"在 {date_start} 至 {date_end} 期间未检索到云量 < {max_cloud_cover}% 的影像，请放宽日期或云量限制。"
+
+        result_lines = [f"🛰️ 成功检索到 {len(features)} 景符合条件的 Sentinel-2 影像："]
+        loaded_layer_name = ""
+
+        for i, item in enumerate(features):
+            props = item.get("properties", {})
+            acq_time = props.get("datetime", "")[:10]
+            cloud = props.get("eo:cloud_cover", 0.0)
+            item_id = item.get("id", "")
+            assets = item.get("assets", {})
+
+            result_lines.append(f"{i+1}. 拍摄日期: `{acq_time}` | 云量: `{cloud:.1f}%` | 景号: `{item_id}`")
+
+            if i == 0 and auto_load_first:
+                layer = None
+                
+                # 裁剪参数：严格限定只截取当前屏幕范围 [min_lon, min_lat, max_lon, max_lat]
+                warp_options = gdal.WarpOptions(
+                    format="VRT",
+                    outputBounds=[extent_bbox[0], extent_bbox[1], extent_bbox[2], extent_bbox[3]],
+                    outputBoundsSRS="EPSG:4326",
+                    resampleAlg="bilinear"
+                )
+
+                # 方案 A：合成并裁剪 4波段/6波段 多光谱（RGB+近红外）
+                if band_type in ("4band", "full") and all(k in assets for k in ("red", "green", "blue", "nir")):
+                    band_urls = [
+                        f"/vsicurl/{assets['red']['href']}",    # Band 1: 红光 (B04)
+                        f"/vsicurl/{assets['green']['href']}",  # Band 2: 绿光 (B03)
+                        f"/vsicurl/{assets['blue']['href']}",   # Band 3: 蓝光 (B02)
+                        f"/vsicurl/{assets['nir']['href']}",    # Band 4: 近红外 (B08)
+                    ]
+                    if band_type == "full" and "swir16" in assets and "swir22" in assets:
+                        band_urls.append(f"/vsicurl/{assets['swir16']['href']}")
+                        band_urls.append(f"/vsicurl/{assets['swir22']['href']}")
+                        band_desc = "6波段多光谱"
+                    else:
+                        band_desc = "4波段多光谱(含近红外)"
+
+                    # 1. 先合成虚拟多波段
+                    raw_vrt = os.path.join(tempfile.gettempdir(), f"s2_{item_id}_raw.vrt")
+                    gdal.BuildVRT(raw_vrt, band_urls, options=gdal.BuildVRTOptions(separate=True))
+
+                    # 2. 虚拟裁剪至屏幕视口范围
+                    clipped_vrt = os.path.join(tempfile.gettempdir(), f"s2_{item_id}_screen.vrt")
+                    gdal.Warp(clipped_vrt, raw_vrt, options=warp_options)
+
+                    layer_name = f"Sentinel2_{acq_time}_{band_desc}(屏幕范围)_云量{cloud:.1f}%"
+                    layer = QgsRasterLayer(clipped_vrt, layer_name, "gdal")
+
+                # 方案 B：降级使用 3波段真彩色 (TCI)
+                if layer is None or not layer.isValid():
+                    visual_asset = assets.get("visual") or assets.get("overview")
+                    if visual_asset:
+                        clipped_vrt = os.path.join(tempfile.gettempdir(), f"s2_{item_id}_rgb_screen.vrt")
+                        gdal.Warp(clipped_vrt, f"/vsicurl/{visual_asset['href']}", options=warp_options)
+
+                        layer_name = f"Sentinel2_{acq_time}_真彩色(屏幕范围)_云量{cloud:.1f}%"
+                        layer = QgsRasterLayer(clipped_vrt, layer_name, "gdal")
+
+                if layer and layer.isValid():
+                    QgsProject.instance().addMapLayer(layer)
+                    loaded_layer_name = layer_name
+                    if iface and iface.mapCanvas():
+                        iface.mapCanvas().refresh()
+
+        if loaded_layer_name:
+            result_lines.append(f"\n🎉 **已自动为您加载【当前屏幕范围】的影像**：`{loaded_layer_name}`\n"
+                                f"📐 *图层范围已自动裁切为当前地图视口大小，无多余边缘。*")
+
+        return "\n".join(result_lines)
+    except Exception as e:
+        return f"检索 Sentinel-2 影像时发生异常: {e}"
+
+
+def _geocode_place_bbox(place_name: str) -> list:
+    """内部辅助：将地名解析为 WGS84 经纬度范围 [min_lon, min_lat, max_lon, max_lat]"""
+    # 常用主要城市/区域快速坐标库（秒级响应免网络请求）
+    quick_bboxes = {
+        "北京": [115.7, 39.4, 117.4, 41.0],
+        "上海": [120.8, 30.7, 122.2, 31.9],
+        "广州": [112.9, 22.5, 114.1, 23.9],
+        "深圳": [113.7, 22.4, 114.6, 22.9],
+        "成都": [103.7, 30.3, 104.5, 31.0],
+        "武汉": [113.8, 29.9, 114.6, 30.8],
+        "杭州": [119.9, 30.0, 120.5, 30.5],
+        "南京": [118.5, 31.7, 119.2, 32.3],
+        "重庆": [105.8, 29.1, 107.2, 30.2],
+        "西安": [108.6, 33.9, 109.3, 34.6],
+        "天津": [116.7, 38.6, 118.1, 40.2],
+        "苏州": [120.3, 31.0, 121.0, 31.6],
+        "太湖": [119.8, 30.8, 120.7, 31.6],
+        "青岛": [119.8, 35.8, 120.9, 36.8],
+    }
+    for k, v in quick_bboxes.items():
+        if k in place_name:
+            return v
+
+    # 若不在预设库中，使用公开在线逆地理接口动态解析
+    try:
+        url = f"https://nominatim.openstreetmap.org/search?q={place_name}&format=json&limit=1"
+        headers = {"User-Agent": "GeoMind-QGIS-Plugin/1.0"}
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200 and r.json():
+            res = r.json()[0]
+            bb = res.get("boundingbox")  # [min_lat, max_lat, min_lon, max_lon]
+            if bb:
+                return [float(bb[2]), float(bb[0]), float(bb[3]), float(bb[1])]
+            lat, lon = float(res["lat"]), float(res["lon"])
+            return [lon - 0.1, lat - 0.1, lon + 0.1, lat + 0.1]
+    except Exception:
+        pass
+
+    return None
+
+
+def skill_fetch_sentinel2_imagery(
+    place_name: str = "当前视口",
+    days_back: int = 14,
+    max_cloud: int = 15,
+    band_type: str = "4band"  # 默认为 4波段 10m 高清多光谱（含近红外）
+) -> str:
+    """
+    检索并流式加载 Sentinel-2 遥感影像（自动完成地点解析 + 画布定位平移 + 多波段多光谱影像上屏）。
+    
+    :param place_name: 目标城市或地点名称（如“北京”、“太湖”）
+    :param days_back: 回溯天数（默认 14 天）
+    :param max_cloud: 允许的最大云量百分比
+    :param band_type: 波段组合模式：'4band' (RGB+近红外, 可算NDVI/NDWI), 'full' (6波段含短波红外), 'rgb' (仅真彩色)
+    """
+    from qgis.core import (
+        QgsCoordinateTransform, QgsCoordinateReferenceSystem, 
+        QgsProject, QgsRectangle
+    )
+    from qgis.utils import iface
+
+    bbox = None
+    located_msg = ""
+
+    if place_name and place_name not in ("当前视口", "当前视图", "当前区域", "视口"):
+        bbox = _geocode_place_bbox(place_name)
+        if bbox and iface and iface.mapCanvas():
+            canvas = iface.mapCanvas()
+            src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            dest_crs = canvas.mapSettings().destinationCrs()
+            tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+            target_rect = tr.transformBoundingBox(QgsRectangle(bbox[0], bbox[1], bbox[2], bbox[3]))
+            canvas.setExtent(target_rect)
+            canvas.refresh()
+            located_msg = f"📍 **已自动定位并聚焦地图至**：`{place_name}`\n"
+
+    if not bbox and iface and iface.mapCanvas():
+        canvas = iface.mapCanvas()
+        rect = canvas.extent()
+        src_crs = canvas.mapSettings().destinationCrs()
+        dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+        tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+        rect_wgs84 = tr.transformBoundingBox(rect)
+        bbox = [
+            round(rect_wgs84.xMinimum(), 4),
+            round(rect_wgs84.yMinimum(), 4),
+            round(rect_wgs84.xMaximum(), 4),
+            round(rect_wgs84.yMaximum(), 4)
+        ]
+
+    if not bbox or (bbox[0] == 0 and bbox[1] == 0):
+        bbox = [115.7, 39.4, 117.4, 41.0]
+
+    today = datetime.now()
+    start_date = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    end_date = today.strftime("%Y-%m-%d")
+
+    result = search_and_load_sentinel2(
+        extent_bbox=bbox,
+        date_start=start_date,
+        date_end=end_date,
+        max_cloud_cover=max_cloud,
+        auto_load_first=True,
+        band_type=band_type
+    )
+
+    return f"{located_msg}{result}"
 
 # ===========================================================================
 # 2. Local free tools (delegates to tools.raster_ops)
@@ -230,11 +442,28 @@ def skill_spatial_filter(layer_name: str, filter_type: str, band_idx: int = 1) -
 
 
 def skill_area_statistics(layer_name: str) -> str:
-    """Compute per-class area statistics."""
+    """Compute per-class area statistics (supports both raster and vector layers)."""
     try:
-        layer = get_layer_by_name(layer_name, "raster")
+        layers = QgsProject.instance().mapLayersByName(layer_name)
+        if not layers:
+            raise ValueError(f"找不到图层: '{layer_name}'")
+        layer = layers[0]
+
+        # 兼容矢量图层统计
+        if isinstance(layer, QgsVectorLayer):
+            total_area_m2 = sum(f.geometry().area() for f in layer.getFeatures() if f.hasGeometry())
+            total_count = layer.featureCount()
+            area_mu = total_area_m2 / 666.6667
+            area_sqkm = total_area_m2 / 1_000_000
+            return (
+                f"矢量图层 '{layer_name}' 面积统计结果：\n"
+                f" - 要素总数: {total_count} 个图斑\n"
+                f" - 总面积: {total_area_m2:,.2f} 平方米 ({area_mu:,.2f} 亩 / {area_sqkm:.4f} 平方公里)"
+            )
+
+        # 栅格图层统计
         stats = area_statistics(layer.source())
-        report = [f"图层 {layer_name} 面积统计结果："]
+        report = [f"栅格图层 '{layer_name}' 像元分类面积统计结果："]
         for s in stats:
             report.append(
                 f" - 类别 {s['class_id']}: {s['pixels']} 个像元，"
@@ -444,7 +673,6 @@ def qgis_run_algorithm(algorithm_id: str, parameters: dict) -> str:
         if not alg:
             return f"错误：未找到算法 `{algorithm_id}`"
 
-        # Resolve layer names to QgsMapLayer objects
         resolved_params = {}
         missing_layer_names = []
         for k, v in parameters.items():
@@ -464,7 +692,6 @@ def qgis_run_algorithm(algorithm_id: str, parameters: dict) -> str:
             detail = ", ".join(f"{k}='{v}'" for k, v in missing_layer_names)
             return f"参数解析失败：找不到图层 {detail}，请先调用 get_active_layers 确认准确图层名后重试。"
 
-        # Default output to memory
         for out in alg.outputDefinitions():
             if out.name() not in resolved_params:
                 resolved_params[out.name()] = "memory:"
@@ -477,7 +704,6 @@ def qgis_run_algorithm(algorithm_id: str, parameters: dict) -> str:
         if not ok:
             return f"算法 `{alg.displayName()}` ({algorithm_id}) 执行失败：{feedback.textLog() or '无详细日志'}"
 
-        # Capture and load output layers
         loaded_layers = []
         layers_to_load = dict(context.layersToLoadOnCompletion())
         for layer_id, details in layers_to_load.items():
@@ -491,7 +717,6 @@ def qgis_run_algorithm(algorithm_id: str, parameters: dict) -> str:
                 QgsProject.instance().addMapLayer(layer)
                 loaded_layers.append(layer.name())
 
-        # Fallback: check outputs directly
         if not loaded_layers:
             for out_name, out_val in outputs.items():
                 layer = None
@@ -518,7 +743,7 @@ def qgis_run_algorithm(algorithm_id: str, parameters: dict) -> str:
                 f"算法 `{alg.displayName()}` ({algorithm_id}) 已调用完成，"
                 f"但未捕获到任何有效的输出图层。\n"
                 f"原始输出: {json.dumps({k: str(v) for k, v in outputs.items()}, ensure_ascii=False)}\n"
-                f"请不要向用户报告任务已成功完成，应如实说明结果未确认。"
+                f"请如实说明结果未确认。"
             )
 
         return f"算法 `{alg.displayName()}` ({algorithm_id}) 执行成功，已加载图层: {', '.join(loaded_layers)}"
@@ -526,3 +751,72 @@ def qgis_run_algorithm(algorithm_id: str, parameters: dict) -> str:
     except Exception as e:
         logger.error("Algorithm execution failed: %s", e)
         return f"执行算子 `{algorithm_id}` 失败: {e}"
+
+def execute_pyqgis_code(python_code: str) -> str:
+    """
+    【兜底终极技能】在当前 QGIS 环境中直接动态执行 Python / PyQGIS 代码。
+    当现有工具箱无法满足复杂定制需求或算子调用失败时使用。
+    
+    代码环境已默认注入：
+    - qgis.core (QgsProject, QgsVectorLayer, QgsRasterLayer, QgsGeometry 等全部核心类)
+    - qgis.utils (iface)
+    - processing (QGIS 处理工具箱)
+    - np (numpy), gdal, os, sys
+    
+    :param python_code: 完整的 Python/PyQGIS 可执行代码字符串
+    """
+    import io
+    import sys
+    import traceback
+    import numpy as np
+    from osgeo import gdal, ogr, osr
+    import processing
+    from qgis.utils import iface
+    import qgis.core as qgis_core
+
+    # 构建安全且完备的执行命名空间
+    exec_globals = {
+        "__builtins__": __builtins__,
+        "QgsProject": qgis_core.QgsProject,
+        "QgsVectorLayer": qgis_core.QgsVectorLayer,
+        "QgsRasterLayer": qgis_core.QgsRasterLayer,
+        "QgsFeature": qgis_core.QgsFeature,
+        "QgsGeometry": qgis_core.QgsGeometry,
+        "QgsPointXY": qgis_core.QgsPointXY,
+        "QgsRectangle": qgis_core.QgsRectangle,
+        "QgsField": qgis_core.QgsField,
+        "QgsCoordinateTransform": qgis_core.QgsCoordinateTransform,
+        "QgsCoordinateReferenceSystem": qgis_core.QgsCoordinateReferenceSystem,
+        "iface": iface,
+        "processing": processing,
+        "np": np,
+        "numpy": np,
+        "gdal": gdal,
+        "ogr": ogr,
+        "osr": osr,
+        "os": os,
+        "json": json,
+    }
+
+    # 捕获脚本中的 print 输出
+    stdout_backup = sys.stdout
+    captured_output = io.StringIO()
+    sys.stdout = captured_output
+
+    try:
+        # 执行动态代码
+        exec(python_code, exec_globals)
+        sys.stdout = stdout_backup
+        
+        # 刷新画布
+        if iface and iface.mapCanvas():
+            iface.mapCanvas().refresh()
+
+        logs = captured_output.getvalue().strip()
+        log_str = f"\n执行日志输出:\n{logs}" if logs else ""
+        return f"✔ PyQGIS 代码执行成功！{log_str}"
+
+    except Exception as e:
+        sys.stdout = stdout_backup
+        err_detail = traceback.format_exc()
+        return f"❌ PyQGIS 代码执行报错: {e}\n详细堆栈:\n{err_detail}"

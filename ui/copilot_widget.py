@@ -7,6 +7,9 @@ Features:
 - Collapsible Reasoning (auto-collapses on text output)
 - Collapsible Tool Execution Progress
 - DeepSeek/R1 thinking mode compliance (strict reasoning_content round-trip & history auto-sanitization)
+- Round-scoped buffer separation for multi-step tool call round-trips
+- Dynamic pulsing & simulated progress bar for asynchronous background tasks
+- On-demand extent guard triggered ONLY when interpretation tasks are executed
 - Robust streaming HTML rendering without syntax breakage
 """
 import html
@@ -15,7 +18,7 @@ import re
 import time
 from datetime import datetime
 
-from qgis.PyQt.QtCore import Qt, QUrl
+from qgis.PyQt.QtCore import Qt, QUrl, QTimer
 from qgis.PyQt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QTextBrowser,
     QMessageBox, QFrame, QMenu, QLabel, QApplication,
@@ -50,6 +53,8 @@ SKILL_HUMAN_LABELS = {
     "qgis_search_tools": "检索 QGIS 空间算法工具箱",
     "qgis_get_tool_params": "读取 QGIS 算法参数配置",
     "qgis_run_algorithm": "执行 QGIS 本地空间分析算法",
+    "skill_fetch_sentinel2_imagery":"检索并流式加载 Sentinel-2 遥感影像",
+    "execute_pyqgis_code":"执行动态 PyQGIS 空间分析代码"
 }
 
 
@@ -99,7 +104,7 @@ def _render_mini_markdown(raw_text: str) -> str:
 
 
 class LlmCopilotWidget(QWidget):
-    """具有折叠思考、折叠进度与流式卡片渲染的 AI Copilot 助手。"""
+    """具有折叠思考、实时动态进度条与流式卡片渲染的 AI Copilot 助手。"""
 
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -109,6 +114,13 @@ class LlmCopilotWidget(QWidget):
         self._llm_task = None
         self._active_ai_task = None
         self._current_assistant_item = None
+        self._current_progress_item_id = None
+
+        # 进度条呼吸律动与动态步进定时器
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(500)
+        self._progress_timer.timeout.connect(self._on_progress_timer_tick)
+        self._anim_tick = 0
 
         self._build_ui()
 
@@ -145,7 +157,7 @@ class LlmCopilotWidget(QWidget):
         top_bar.addStretch()
         layout.addLayout(top_bar)
 
-        # -- 会话浏览区 (使用 QTextBrowser 支持交互式点击折叠) --
+        # -- 会话浏览区 --
         self.history_browser = QTextBrowser()
         self.history_browser.setReadOnly(True)
         self.history_browser.setOpenLinks(False)
@@ -281,8 +293,22 @@ class LlmCopilotWidget(QWidget):
                 html_blocks.append(
                     "<div style='background-color:#eff6ff; border:1px solid #dbeafe; border-left:3px solid #3b82f6; "
                     "padding:9px 12px; margin:8px 0 4px 18px; color:#1e293b; font-size:13px; line-height:1.5;'>"
-                    "<div style='font-weight:700; color:#1d4ed8; font-size:11px; margin-bottom:3px;'>你</div>"
+                    "<div style='font-weight:700; color:#1d4ed8; font-size:12px; margin-bottom:3px;'>👤</div>"
                     f"{safe_text}</div>"
+                )
+
+            elif role == "task_progress":
+                progress = item.get("progress", 0.0)
+                status_text = item.get("status_text", "正在处理中...")
+                icon = item.get("icon", "⚡")
+                pct = max(0, min(100, int(progress)))
+                html_blocks.append(
+                    "<div style='background-color:#f0fdf4; border:1px solid #bbf7d0; border-left:3px solid #16a34a; "
+                    "padding:10px 12px; margin:8px 0; font-size:12px; line-height:1.5;'>"
+                    f"<div style='font-weight:700; color:#15803d; margin-bottom:6px;'>{icon} {html.escape(status_text)} ({pct}%)</div>"
+                    "<div style='background-color:#e2e8f0; border-radius:4px; height:8px; width:100%; overflow:hidden;'>"
+                    f"<div style='background-color:#16a34a; width:{max(4, pct)}%; height:100%; border-radius:4px;'></div>"
+                    "</div></div>"
                 )
 
             elif role == "system_error":
@@ -379,6 +405,8 @@ class LlmCopilotWidget(QWidget):
 
     def _reset_welcome_message(self):
         self.display_items = []
+        self._current_progress_item_id = None
+        self._progress_timer.stop()
         self._render_chat_ui()
 
     def _clear_and_new_session(self):
@@ -391,13 +419,16 @@ class LlmCopilotWidget(QWidget):
             if reply != QMessageBox.Yes:
                 return
             self._stop_current_task()
+        self._progress_timer.stop()
         self.chat_history = []
         self._current_assistant_item = None
+        self._current_progress_item_id = None
         self._reset_welcome_message()
         self._reset_btn()
 
     def _stop_current_task(self):
         stopped = False
+        self._progress_timer.stop()
         if self._llm_task is not None:
             try:
                 self._llm_task.cancel()
@@ -413,6 +444,9 @@ class LlmCopilotWidget(QWidget):
             self._active_ai_task = None
             stopped = True
         if stopped:
+            if self._current_progress_item_id:
+                self.display_items = [item for item in self.display_items if item.get("id") != self._current_progress_item_id]
+                self._current_progress_item_id = None
             self.display_items.append({"id": f"stop_{time.time()}", "role": "system_error", "content": "⏹ 任务已被用户打断"})
             self._render_chat_ui()
             self._reset_btn()
@@ -420,15 +454,9 @@ class LlmCopilotWidget(QWidget):
     # -- 核心：DeepSeek 历史上下文强力清洗器 --------------------------------
 
     def _sanitize_chat_history(self):
-        """
-        扫描修补历史消息中所有遗留的 assistant 条目，
-        确保任何带 tool_calls 的消息必定含有 reasoning_content，
-        彻底清除之前因断连/旧逻辑导致的 400 坏数据。
-        """
         for msg in self.chat_history:
             if msg.get("role") == "assistant":
                 if "tool_calls" in msg:
-                    # 必须要有非空的 reasoning_content 字符串
                     if not msg.get("reasoning_content"):
                         msg["reasoning_content"] = "Thinking and preparing tool execution..."
                 else:
@@ -446,19 +474,7 @@ class LlmCopilotWidget(QWidget):
             self.dock.show_account_page()
             return
 
-        too_large, guard_msg = self._check_canvas_extent_too_large()
-        if too_large:
-            self.display_items.append({"id": f"guard_{time.time()}", "role": "system_error", "content": guard_msg})
-            self._render_chat_ui()
-            reply = QMessageBox.question(
-                self, "屏幕范围过大",
-                f"{guard_msg}\n\n是否仍要发送本条消息？\n"
-                "普通问答可继续；若涉及裁图/解译任务仍会被安全拦截。",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-
+        # 日常普通对话不作范围拦截，直接发送
         self.input_edit.clear()
 
         user_msg_id = f"user_{time.time()}"
@@ -468,11 +484,13 @@ class LlmCopilotWidget(QWidget):
         self._current_assistant_item = {
             "id": f"asst_{time.time()}",
             "role": "assistant",
-            "reasoning": "",
+            "reasoning": "",         # UI 累加展示
+            "round_reasoning": "",   # 仅供当前轮次提交给后端
             "reasoning_collapsed": False,
             "tools": [],
             "tools_collapsed": False,
-            "content": "",
+            "content": "",           # UI 累加展示
+            "round_content": "",     # 仅供当前轮次提交给后端
         }
         self.display_items.append(self._current_assistant_item)
         self._render_chat_ui()
@@ -482,32 +500,7 @@ class LlmCopilotWidget(QWidget):
         self.stop_btn.setEnabled(True)
         self._request_backend_copilot()
 
-    def _check_canvas_extent_too_large(self):
-        from ..utils.extent_guard import check_extent_too_large
-
-        canvas = getattr(self.dock, "canvas", None)
-        iface = getattr(self.dock, "iface", None)
-        if canvas is None or iface is None:
-            return False, ""
-        try:
-            extent = canvas.extent()
-            extent_crs = canvas.mapSettings().destinationCrs()
-        except Exception:
-            return False, ""
-
-        active = iface.activeLayer()
-        candidates = [active] if isinstance(active, QgsRasterLayer) else [
-            layer for layer in QgsProject.instance().mapLayers().values()
-            if isinstance(layer, QgsRasterLayer)
-        ]
-        for layer in candidates:
-            too_large, msg = check_extent_too_large(layer, extent, extent_crs)
-            if too_large:
-                return True, msg
-        return False, ""
-
     def _request_backend_copilot(self):
-        # 1. 发送前先进行 DeepSeek 协议强力修复
         self._sanitize_chat_history()
 
         active_layers = [l.name() for l in QgsProject.instance().mapLayers().values()]
@@ -539,6 +532,7 @@ class LlmCopilotWidget(QWidget):
 
         elif msg_type == "reasoning" and content:
             self._current_assistant_item["reasoning"] += content
+            self._current_assistant_item["round_reasoning"] += content
             self._render_chat_ui()
 
         elif msg_type == "text" and content:
@@ -546,23 +540,27 @@ class LlmCopilotWidget(QWidget):
                 self._current_assistant_item["reasoning_collapsed"] = True
 
             self._current_assistant_item["content"] += content
+            self._current_assistant_item["round_content"] += content
             self._render_chat_ui()
 
         elif msg_type == "tool_call":
             tool_calls = data.get("tool_calls", [])
 
-            # --- 强制填充 reasoning_content，即使为空也给占位，满足 API 约束 ---
-            reasoning_val = self._current_assistant_item.get("reasoning")
-            if not reasoning_val:
-                reasoning_val = "Thinking and analyzing tool selection..."
+            round_reasoning = self._current_assistant_item.get("round_reasoning", "")
+            round_content = self._current_assistant_item.get("round_content", "")
+
+            reasoning_val = round_reasoning if round_reasoning else "Thinking and analyzing tool selection..."
 
             asst_msg = {
                 "role": "assistant",
-                "content": self._current_assistant_item.get("content") or None,
+                "content": round_content or None,
                 "tool_calls": tool_calls,
                 "reasoning_content": reasoning_val,
             }
             self.chat_history.append(asst_msg)
+
+            self._current_assistant_item["round_reasoning"] = ""
+            self._current_assistant_item["round_content"] = ""
 
             for tc in tool_calls:
                 fn_name = tc["function"]["name"]
@@ -600,16 +598,20 @@ class LlmCopilotWidget(QWidget):
 
     def _on_copilot_finished(self):
         if self._current_assistant_item:
-            content = self._current_assistant_item.get("content", "")
-            reasoning = self._current_assistant_item.get("reasoning", "")
-            if content or reasoning:
+            round_content = self._current_assistant_item.get("round_content", "")
+            round_reasoning = self._current_assistant_item.get("round_reasoning", "")
+            if round_content or round_reasoning:
                 asst_msg = {
                     "role": "assistant",
-                    "content": content
+                    "content": round_content
                 }
-                if reasoning:
-                    asst_msg["reasoning_content"] = reasoning
+                if round_reasoning:
+                    asst_msg["reasoning_content"] = round_reasoning
                 self.chat_history.append(asst_msg)
+
+            self._current_assistant_item["round_content"] = ""
+            self._current_assistant_item["round_reasoning"] = ""
+
         self._reset_btn()
 
     def _on_copilot_error(self, err_msg: str):
@@ -627,8 +629,10 @@ class LlmCopilotWidget(QWidget):
             skill_vector_smooth, skill_kmeans_cluster, skill_raster_diff,
             skill_image_enhance, skill_raster_polygonize,
             skill_ai_extract_feature, skill_ai_sam3_extract, skill_ai_change_detection,
-            skill_geocode_address, qgis_search_tools, qgis_get_tool_params, qgis_run_algorithm,
+            skill_geocode_address, qgis_search_tools, qgis_get_tool_params, qgis_run_algorithm,skill_fetch_sentinel2_imagery, 
+            execute_pyqgis_code,
         )
+        from ..utils.extent_guard import check_extent_too_large
 
         server_url = self.dock.current_server_url()
         token = self.dock.token
@@ -650,15 +654,41 @@ class LlmCopilotWidget(QWidget):
             "qgis_search_tools": qgis_search_tools,
             "qgis_get_tool_params": qgis_get_tool_params,
             "qgis_run_algorithm": qgis_run_algorithm,
+            "skill_fetch_sentinel2_imagery": skill_fetch_sentinel2_imagery,
+            "execute_pyqgis_code": execute_pyqgis_code, 
         }
 
         if fn_name in local_tools:
             return local_tools[fn_name](**args)
 
+        # 核心：仅在调用云端深度解译大模型时进行范围过大判定与拦截
         if fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
             canvas = self.dock.canvas
             extent = canvas.extent()
             extent_crs = canvas.mapSettings().destinationCrs()
+
+            # 提前基于目标图层进行范围超限校验
+            target_layer_name = args.get("layer_name") or args.get("layer_t1")
+            target_layer = None
+            if target_layer_name:
+                for l in QgsProject.instance().mapLayers().values():
+                    if l.name() == target_layer_name and isinstance(l, QgsRasterLayer):
+                        target_layer = l
+                        break
+
+            if target_layer is not None:
+                too_large, guard_msg = check_extent_too_large(target_layer, extent, extent_crs)
+                if too_large:
+                    self.display_items.append({
+                        "id": f"guard_{time.time()}",
+                        "role": "system_error",
+                        "content": f"解译范围过大已拦截：{guard_msg}"
+                    })
+                    self._render_chat_ui()
+                    return (
+                        f"已停止执行解译：当前地图视口范围过大（{guard_msg}）。"
+                        f"请明确告知用户：需要放大地图视图以聚焦解译区域，然后再重新尝试提取。"
+                    )
 
             try:
                 if fn_name == "skill_ai_extract_feature":
@@ -677,25 +707,108 @@ class LlmCopilotWidget(QWidget):
                         server_url, token, machine_id, extent=extent, extent_crs=extent_crs,
                     )
             except ExtentTooLargeError as e:
-                return f"已停止推送裁图与解译：{e}"
+                self.display_items.append({
+                    "id": f"guard_{time.time()}",
+                    "role": "system_error",
+                    "content": f"解译范围过大已拦截：{e}"
+                })
+                self._render_chat_ui()
+                return f"已停止推送裁图与解译：{e}。请提示用户放大地图后重试。"
             except Exception as e:
                 return f"提交云端解译任务失败: {e}"
 
             self._active_ai_task = task
             self.stop_btn.setEnabled(True)
 
+            # 插入并激活后台进度条卡片
+            progress_card_id = f"progress_{time.time()}"
+            self._current_progress_item_id = progress_card_id
+            self._anim_tick = 0
+            self.display_items.append({
+                "id": progress_card_id,
+                "role": "task_progress",
+                "status_text": "影像切片与预处理中",
+                "progress": 8.0,
+                "icon": "⚡",
+            })
+            self._render_chat_ui()
+
+            # 启动动画与平滑步进定时器
+            self._progress_timer.start()
+
+            # 绑定任务进度与生命周期信号
+            try:
+                task.progressChanged.connect(self._on_ai_task_progress)
+            except Exception:
+                pass
+
             task.taskSucceeded.connect(self._on_ai_task_ok)
             task.taskFailed.connect(self._on_ai_task_error)
-            task.taskCancelled.connect(
-                lambda: self.display_items.append(
-                    {"id": f"ai_cancel_{time.time()}", "role": "system_error", "content": "⏹ 云端解译已取消"})
-            )
+            task.taskCancelled.connect(self._on_ai_task_cancelled)
+
             QgsApplication.taskManager().addTask(task)
             return "已成功向云端 GPU 集群投递解译任务，正在后台处理中..."
 
         return f"未找到可执行工具: {fn_name}"
 
+    def _on_progress_timer_tick(self):
+        """定时器脉冲：驱动图标闪烁与平滑进度渐进"""
+        if not self._current_progress_item_id:
+            self._progress_timer.stop()
+            return
+
+        self._anim_tick += 1
+        icons = ["⚡", "✨", "⏳", "⌛"]
+        current_icon = icons[self._anim_tick % len(icons)]
+        dots = "." * ((self._anim_tick % 3) + 1)
+
+        for item in self.display_items:
+            if item.get("id") == self._current_progress_item_id:
+                item["icon"] = current_icon
+                curr_p = item.get("progress", 0.0)
+
+                # 模拟平滑增长（避免卡在0%）
+                if curr_p < 30.0:
+                    curr_p += 2.5
+                    item["status_text"] = f"影像切片与云端投递中{dots}"
+                elif curr_p < 75.0:
+                    curr_p += 1.2
+                    item["status_text"] = f"云端 GPU 深度模型推理中{dots}"
+                elif curr_p < 95.0:
+                    curr_p += 0.4
+                    item["status_text"] = f"要素图斑矢量化与后处理中{dots}"
+
+                item["progress"] = min(95.0, curr_p)
+                self._render_chat_ui(preserve_scroll=True)
+                break
+
+    def _on_ai_task_progress(self, progress: float):
+        """若后台有真实进度推送，则优先采用最高进度"""
+        if self._current_progress_item_id:
+            for item in self.display_items:
+                if item.get("id") == self._current_progress_item_id:
+                    item["progress"] = max(item.get("progress", 0.0), progress)
+                    self._render_chat_ui(preserve_scroll=True)
+                    break
+
+    def _on_ai_task_cancelled(self):
+        """任务取消处理"""
+        self._progress_timer.stop()
+        if self._current_progress_item_id:
+            self.display_items = [item for item in self.display_items if item.get("id") != self._current_progress_item_id]
+            self._current_progress_item_id = None
+        self.display_items.append({"id": f"ai_cancel_{time.time()}", "role": "system_error", "content": "⏹ 云端解译已取消"})
+        self._render_chat_ui()
+        self._active_ai_task = None
+        self._reset_btn()
+
     def _on_ai_task_ok(self, result_path, content_type):
+        """任务成功处理"""
+        self._progress_timer.stop()
+        if self._current_progress_item_id:
+            self.display_items = [item for item in self.display_items if item.get("id") != self._current_progress_item_id]
+            self._current_progress_item_id = None
+
         layer_name = f"AI解译结果({datetime.now().strftime('%H:%M:%S')})"
         if result_path.endswith(".tif"):
             new_layer = QgsRasterLayer(result_path, layer_name)
@@ -717,6 +830,12 @@ class LlmCopilotWidget(QWidget):
         self._reset_btn()
 
     def _on_ai_task_error(self, err_msg):
+        """任务失败处理"""
+        self._progress_timer.stop()
+        if self._current_progress_item_id:
+            self.display_items = [item for item in self.display_items if item.get("id") != self._current_progress_item_id]
+            self._current_progress_item_id = None
+
         self.display_items.append(
             {"id": f"ai_err_{time.time()}", "role": "system_error", "content": f"云端解译失败：{err_msg}"})
         self._render_chat_ui()

@@ -17,6 +17,7 @@ from qgis.PyQt.QtWidgets import (
 
 from ..core.config import settings
 from ..core.constants import (
+    FALLBACK_SERVER_URL,
     SETTINGS_ORG, SETTINGS_APP,
     SETTINGS_KEY_TOKEN, SETTINGS_KEY_USERNAME,
     SETTINGS_KEY_DOCK_VISIBLE, SETTINGS_KEY_DOCK_PAGE, SETTINGS_KEY_DOCK_AREA,
@@ -45,6 +46,10 @@ logger = get_logger(__name__)
 
 class ImageInterpretDockWidget(QDockWidget):
     """Main dock container: Copilot chat + account center + 18 tool pages."""
+
+    # Exposed so pages (e.g. AccountSettingsPage) can detect whether URL
+    # resolution ultimately fell back to the built-in default.
+    FALLBACK_SERVER_URL = FALLBACK_SERVER_URL
 
     def __init__(self, iface, parent=None):
         super().__init__("GeoAI 遥感智能解译", parent)
