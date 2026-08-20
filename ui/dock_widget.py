@@ -92,7 +92,7 @@ class ImageInterpretDockWidget(QDockWidget):
         self.back_btn.setVisible(False)
         top_bar.addWidget(self.back_btn)
 
-        self.brand_logo = QLabel("🧭")
+        self.brand_logo = QLabel("🛰️")
         self.brand_logo.setObjectName("brandLogo")
         self.brand_logo.setFixedSize(32, 32)
         self.brand_logo.setAlignment(Qt.AlignCenter)
