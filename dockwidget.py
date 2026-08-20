@@ -1633,7 +1633,6 @@ class LlmCopilotWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        # ---------------- 1. 顶部轻量操作栏 (放置 清空 与 停止 按钮) ----------------
         top_bar = QHBoxLayout()
         top_bar.setContentsMargins(2, 0, 2, 0)
         top_bar.setSpacing(6)
@@ -1641,16 +1640,16 @@ class LlmCopilotWidget(QWidget):
         self.clear_btn = QPushButton("🧹 新建 / 清空会话")
         self.clear_btn.setToolTip("清空历史记录并开启新会话")
         self.clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                color: #475569;
-                border: 1px solid #cbd5e1;
-                border-radius: 5px;
-                padding: 3px 8px;
-                font-size: 11px;
-            }
-            QPushButton:hover { background-color: #f1f5f9; color: #0f172a; }
-        """)
+                    QPushButton {
+                        background-color: #ffffff;
+                        color: #475569;
+                        border: 1px solid #cbd5e1;
+                        border-radius: 5px;
+                        padding: 3px 8px;
+                        font-size: 11px;
+                    }
+                    QPushButton:hover { background-color: #f1f5f9; color: #0f172a; }
+                """)
         self.clear_btn.clicked.connect(self._clear_and_new_session)
         top_bar.addWidget(self.clear_btn)
 
@@ -1658,22 +1657,27 @@ class LlmCopilotWidget(QWidget):
         self.stop_btn.setEnabled(False)
         self.stop_btn.setToolTip("中断当前 AI 思考或任务")
         self.stop_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #fef2f2;
-                color: #dc2626;
-                border: 1px solid #fca5a5;
-                border-radius: 5px;
-                padding: 3px 8px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #fee2e2; }
-            QPushButton:disabled { background-color: transparent; color: #cbd5e1; border-color: transparent; }
-        """)
+                    QPushButton {
+                        background-color: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fca5a5;
+                        border-radius: 5px;
+                        padding: 3px 8px;
+                        font-size: 11px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #fee2e2; }
+                    QPushButton:disabled { background-color: transparent; color: #cbd5e1; border-color: transparent; }
+                """)
         self.stop_btn.clicked.connect(self._stop_current_task)
         top_bar.addWidget(self.stop_btn)
 
-        top_bar.addStretch()
+        # 👈 放到停止生成按钮后面并居中
+        self.disclaimer_label = QLabel("AI可能生成有误，请注意核实和数据保存")
+        self.disclaimer_label.setStyleSheet("color: #dc2626; font-size: 11px; margin-left: 6px;")
+        # self.disclaimer_label.setAlignment(Qt.AlignCenter)
+        top_bar.addWidget(self.disclaimer_label, stretch=1)
+
         layout.addLayout(top_bar)
 
         # ---------------- 2. 聊天历史主展示区 ----------------
@@ -1775,21 +1779,21 @@ class LlmCopilotWidget(QWidget):
         card_layout.addLayout(bottom_toolbar)
         layout.addWidget(input_card)
 
-        # ---------------- 4. 底部轻量提示 ----------------
-        self.disclaimer_label = QLabel("模型可能出错，请在运行前做好数据保存工作。")
-        self.disclaimer_label.setStyleSheet("""
-            QLabel {
-                background-color: #f8fafc;
-                border: 1px solid #e2e8f0;
-                border-radius: 5px;
-                padding: 3px 6px;
-                color: #64748b;
-                font-size: 11px;
-            }
-        """)
-        self.disclaimer_label.setWordWrap(True)
-        self.disclaimer_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.disclaimer_label)
+        # # ---------------- 4. 底部轻量提示 ----------------
+        # self.disclaimer_label = QLabel("模型可能出错，请在运行前做好数据保存工作。")
+        # self.disclaimer_label.setStyleSheet("""
+        #     QLabel {
+        #         background-color: #f8fafc;
+        #         border: 1px solid #e2e8f0;
+        #         border-radius: 5px;
+        #         padding: 3px 6px;
+        #         color: #64748b;
+        #         font-size: 11px;
+        #     }
+        # """)
+        # self.disclaimer_label.setWordWrap(True)
+        # self.disclaimer_label.setAlignment(Qt.AlignCenter)
+        # layout.addWidget(self.disclaimer_label)
 
     def _build_tools_menu(self):
         """构建 Tools 下拉菜单 (包含免费工具与 AI 大模型)"""
