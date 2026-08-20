@@ -6,6 +6,7 @@ Features:
 - Markdown rich-text rendering
 - Collapsible Reasoning (auto-collapses on text output)
 - Collapsible Tool Execution Progress
+- DeepSeek/R1 thinking mode compliance (reasoning_content preservation)
 - Robust streaming HTML rendering without syntax breakage
 """
 import html
@@ -67,6 +68,7 @@ def _render_mini_markdown(raw_text: str) -> str:
             "padding:8px 10px; margin:6px 0; font-family:Consolas, Monaco, monospace; "
             f"font-size:11px; white-space:pre-wrap;'>{code}</div>"
         )
+
     text = re.sub(r"```(?:\w+)?\n?(.*?)```", replace_code_block, text, flags=re.DOTALL)
 
     # 2. 行内代码 `code`
@@ -77,8 +79,12 @@ def _render_mini_markdown(raw_text: str) -> str:
     )
 
     # 3. 标题 (##, ###)
-    text = re.sub(r"^(?:###\s+)(.+)$", r"<div style='font-size:13px; font-weight:700; color:#0f172a; margin:8px 0 4px 0;'>\1</div>", text, flags=re.MULTILINE)
-    text = re.sub(r"^(?:##\s+)(.+)$", r"<div style='font-size:14px; font-weight:700; color:#0f172a; margin:10px 0 4px 0;'>\1</div>", text, flags=re.MULTILINE)
+    text = re.sub(r"^(?:###\s+)(.+)$",
+                  r"<div style='font-size:13px; font-weight:700; color:#0f172a; margin:8px 0 4px 0;'>\1</div>", text,
+                  flags=re.MULTILINE)
+    text = re.sub(r"^(?:##\s+)(.+)$",
+                  r"<div style='font-size:14px; font-weight:700; color:#0f172a; margin:10px 0 4px 0;'>\1</div>", text,
+                  flags=re.MULTILINE)
 
     # 4. 粗体与斜体
     text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
@@ -249,7 +255,7 @@ class LlmCopilotWidget(QWidget):
         elif link.startswith("http://") or link.startswith("https://"):
             QDesktopServices.openUrl(url)
 
-    # -- 核心 UI 渲染引擎 (整卡自包含生成，杜绝 HTML 乱码) --------------------
+    # -- 核心 UI 渲染引擎 ----------------------------------------------------
 
     def _render_chat_ui(self, preserve_scroll: bool = False):
         """将 display_items 全部渲染为美观、自闭合、可交互的 HTML。"""
@@ -336,12 +342,15 @@ class LlmCopilotWidget(QWidget):
                             status = t.get("status", "running")
                             res = t.get("result", "")
                             if status == "running":
-                                tool_lines.append(f"<div style='margin:2px 0; color:#1d4ed8;'>⚙️ {html.escape(label)}...</div>")
+                                tool_lines.append(
+                                    f"<div style='margin:2px 0; color:#1d4ed8;'>⚙️ {html.escape(label)}...</div>")
                             elif status == "ok":
                                 safe_res = html.escape(str(res))
-                                tool_lines.append(f"<div style='margin:2px 0; color:#15803d;'>✔ {html.escape(label)}: <span style='color:#334155;'>{safe_res}</span></div>")
+                                tool_lines.append(
+                                    f"<div style='margin:2px 0; color:#15803d;'>✔ {html.escape(label)}: <span style='color:#334155;'>{safe_res}</span></div>")
                             elif status == "error":
-                                tool_lines.append(f"<div style='margin:2px 0; color:#dc2626;'>❌ {html.escape(label)} 失败: {html.escape(str(res))}</div>")
+                                tool_lines.append(
+                                    f"<div style='margin:2px 0; color:#dc2626;'>❌ {html.escape(label)} 失败: {html.escape(str(res))}</div>")
 
                         sub_blocks.append(
                             "<div style='background-color:#f8fafc; border:1px solid #e0f2fe; border-left:3px solid #0284c7; "
@@ -509,7 +518,8 @@ class LlmCopilotWidget(QWidget):
             return
 
         if msg_type == "error":
-            self.display_items.append({"id": f"err_{time.time()}", "role": "system_error", "content": f"大模型响应异常：{content}"})
+            self.display_items.append(
+                {"id": f"err_{time.time()}", "role": "system_error", "content": f"大模型响应异常：{content}"})
             self._render_chat_ui()
             self._reset_btn()
             return
@@ -521,7 +531,7 @@ class LlmCopilotWidget(QWidget):
 
         # 收到正文流式 chunk
         elif msg_type == "text" and content:
-            # 当第一次从思考切到正文时，自动将思考过程折叠起来，保持界面清爽！
+            # 当第一次从思考切到正文时，自动将思考过程折叠起来
             if not self._current_assistant_item["content"] and self._current_assistant_item["reasoning"]:
                 self._current_assistant_item["reasoning_collapsed"] = True
 
@@ -531,11 +541,19 @@ class LlmCopilotWidget(QWidget):
         # 收到工具调用指令
         elif msg_type == "tool_call":
             tool_calls = data.get("tool_calls", [])
-            self.chat_history.append({
+
+            # --- 关键修复：组装 assistant 历史，必须包含 reasoning_content ---
+            asst_msg = {
                 "role": "assistant",
-                "content": self._current_assistant_item["content"] or None,
+                "content": self._current_assistant_item.get("content") or None,
                 "tool_calls": tool_calls,
-            })
+            }
+            # 如果模型在调用工具前有思考过程，必须回传给 API (DeepSeek/R1 接口规范)
+            if self._current_assistant_item and self._current_assistant_item.get("reasoning"):
+                asst_msg["reasoning_content"] = self._current_assistant_item["reasoning"]
+
+            self.chat_history.append(asst_msg)
+            # -------------------------------------------------------------
 
             for tc in tool_calls:
                 fn_name = tc["function"]["name"]
@@ -572,15 +590,23 @@ class LlmCopilotWidget(QWidget):
             self._request_backend_copilot()
 
     def _on_copilot_finished(self):
-        if self._current_assistant_item and self._current_assistant_item["content"]:
-            self.chat_history.append({
-                "role": "assistant",
-                "content": self._current_assistant_item["content"]
-            })
+        if self._current_assistant_item:
+            content = self._current_assistant_item.get("content", "")
+            reasoning = self._current_assistant_item.get("reasoning", "")
+            if content or reasoning:
+                asst_msg = {
+                    "role": "assistant",
+                    "content": content
+                }
+                # 带上思考过程，保证后续多轮对话不会因缺失 reasoning_content 报 400
+                if reasoning:
+                    asst_msg["reasoning_content"] = reasoning
+                self.chat_history.append(asst_msg)
         self._reset_btn()
 
     def _on_copilot_error(self, err_msg: str):
-        self.display_items.append({"id": f"err_{time.time()}", "role": "system_error", "content": f"无法获取 AI 回复：{err_msg}"})
+        self.display_items.append(
+            {"id": f"err_{time.time()}", "role": "system_error", "content": f"无法获取 AI 回复：{err_msg}"})
         self._render_chat_ui()
         self._reset_btn()
 
@@ -654,7 +680,8 @@ class LlmCopilotWidget(QWidget):
             task.taskSucceeded.connect(self._on_ai_task_ok)
             task.taskFailed.connect(self._on_ai_task_error)
             task.taskCancelled.connect(
-                lambda: self.display_items.append({"id": f"ai_cancel_{time.time()}", "role": "system_error", "content": "⏹ 云端解译已取消"})
+                lambda: self.display_items.append(
+                    {"id": f"ai_cancel_{time.time()}", "role": "system_error", "content": "⏹ 云端解译已取消"})
             )
             QgsApplication.taskManager().addTask(task)
             return "已成功向云端 GPU 集群投递解译任务，正在后台处理中..."
@@ -683,7 +710,8 @@ class LlmCopilotWidget(QWidget):
         self._reset_btn()
 
     def _on_ai_task_error(self, err_msg):
-        self.display_items.append({"id": f"ai_err_{time.time()}", "role": "system_error", "content": f"云端解译失败：{err_msg}"})
+        self.display_items.append(
+            {"id": f"ai_err_{time.time()}", "role": "system_error", "content": f"云端解译失败：{err_msg}"})
         self._render_chat_ui()
         self._active_ai_task = None
         self._reset_btn()
