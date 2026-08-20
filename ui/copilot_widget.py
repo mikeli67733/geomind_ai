@@ -237,6 +237,19 @@ class LlmCopilotWidget(QWidget):
             self.dock.show_account_page()
             return
 
+        # 每次对话前重新检查屏幕范围：过大则提醒并默认停止推送裁图/解译
+        too_large, guard_msg = self._check_canvas_extent_too_large()
+        if too_large:
+            self._append_warning_chip(guard_msg)
+            reply = QMessageBox.question(
+                self, "屏幕范围过大",
+                f"{guard_msg}\n\n是否仍要发送本条消息？\n"
+                "普通问答可继续；涉及裁图/解译的任务仍会被拦截。",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
         self.input_edit.clear()
         self._close_assistant_block()
         safe_text = html.escape(text)
@@ -252,6 +265,51 @@ class LlmCopilotWidget(QWidget):
         self.stop_btn.setEnabled(True)
         self.chat_history.append({"role": "user", "content": text})
         self._request_backend_copilot()
+
+    def _check_canvas_extent_too_large(self):
+        """
+        Re-check the current canvas extent against raster layers.
+
+        Called before every chat message so oversized viewport ranges are
+        caught early (bandwidth protection).  Prefers the active raster layer,
+        otherwise checks all raster layers.  Returns ``(too_large, message)``
+        and passes when no raster layer is available or estimation fails.
+        """
+        from ..utils.extent_guard import check_extent_too_large
+
+        canvas = getattr(self.dock, "canvas", None)
+        iface = getattr(self.dock, "iface", None)
+        if canvas is None or iface is None:
+            return False, ""
+        try:
+            extent = canvas.extent()
+            extent_crs = canvas.mapSettings().destinationCrs()
+        except Exception:
+            return False, ""
+
+        active = iface.activeLayer()
+        if isinstance(active, QgsRasterLayer):
+            candidates = [active]
+        else:
+            candidates = [
+                layer for layer in QgsProject.instance().mapLayers().values()
+                if isinstance(layer, QgsRasterLayer)
+            ]
+        for layer in candidates:
+            too_large, msg = check_extent_too_large(layer, extent, extent_crs)
+            if too_large:
+                return True, msg
+        return False, ""
+
+    def _append_warning_chip(self, message: str):
+        """Append a red warning chip to the chat history."""
+        safe = html.escape(message)
+        self.history_browser.append(
+            "<div style='margin:10px 0;'>"
+            "<span style='background:#fef2f2; color:#dc2626; border:1px solid #fecaca; "
+            "border-radius:6px; padding:4px 10px; font-size:11px; font-weight:600;'>"
+            f"⚠️ 已停止推送：{safe}</span></div>"
+        )
 
     def _request_backend_copilot(self):
         active_layers = [l.name() for l in QgsProject.instance().mapLayers().values()]
