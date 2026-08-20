@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-遥感智能解译停靠面板 (AI 深度解译 + 本地免费遥感全能工具箱)
-- Page 0: 首页 (分门别类导航入口)
-- Page 1: 账号与设置中心
-- Page 2+: AI 专项解译大模型 (土地利用 / 建筑 / 水体 / 林草 / 耕地 / 道路 / SAM3 / 变化检测)
-- Page 9+: 10 大本地免费遥感与 GIS 工具
+GeoAI 遥感智能解译终端 (现代对话驱动版)
+- 默认主页: AI Copilot 自然语言对话主终端 (输入框左下角集成 Key 配置与 Tools 综合工具箱)
+- Tools 包含: 10 大本地免费遥感与 GIS 工具 + 8 大 AI 深度解译专项大模型
+- 随时通过顶部导航一键返回对话
 """
 
 import os
+import json
 import tempfile
+import traceback
 from datetime import datetime
 
 import numpy as np
@@ -19,13 +20,14 @@ from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QComboBox, QPushButton, QTextEdit, QLineEdit, QProgressBar, QMessageBox,
     QGroupBox, QCheckBox, QApplication, QToolButton, QStackedWidget, QScrollArea,
-    QFrame, QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QHeaderView,QFormLayout
+    QFrame, QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QHeaderView,
+    QMenu, QAction
 )
 from qgis.core import (
     QgsProject, QgsMapLayerProxyModel, QgsRasterLayer, QgsVectorLayer,
     QgsRectangle, QgsCoordinateTransform, QgsApplication
 )
-from qgis.PyQt.QtGui import QTextCursor, QTextCharFormat, QColor, QFont
+from qgis.PyQt.QtGui import QTextCursor, QTextCharFormat, QColor, QFont, QIcon
 from qgis.gui import QgsMapLayerComboBox
 
 from .extent_tool import ExtentSelectTool
@@ -38,14 +40,11 @@ from .constants import (
     MODELS, LANDUSE_CLASSES, DEFAULT_CHECKED_CLASS_IDS,
     DEFAULT_SERVER_URL, SETTINGS_ORG, SETTINGS_APP,
     SETTINGS_KEY_SERVER_URL, SETTINGS_KEY_TOKEN, SETTINGS_KEY_USERNAME,
-    PLAN_LABELS, FREE_PLAN_DAILY_QUOTA, fetch_remote_server_url
-)
-from qgis.core import QgsApplication
-from .llm_agent import BackendCopilotTask
-from .constants import (
+    PLAN_LABELS, FREE_PLAN_DAILY_QUOTA, fetch_remote_server_url,
     SETTINGS_KEY_LLM_API_KEY, SETTINGS_KEY_LLM_BASE_URL, SETTINGS_KEY_LLM_MODEL,
-    DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL,find_class_ids_by_keywords, get_model_key_by_mode
+    DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL, find_class_ids_by_keywords, get_model_key_by_mode
 )
+from .llm_agent import BackendCopilotTask
 
 # 栅格与矢量图层过滤器枚举兼容
 RASTER_LAYER_FILTER = getattr(QgsMapLayerProxyModel, 'RasterLayer', None)
@@ -61,21 +60,6 @@ if VECTOR_LAYER_FILTER is None:
         VECTOR_LAYER_FILTER = QgsMapLayerProxyModel.Filter.VectorLayer
     except AttributeError:
         VECTOR_LAYER_FILTER = QgsMapLayerProxyModel.Filter.Vector
-
-
-
-def find_class_ids_by_keywords(keywords: list, fallback_id: str = "") -> str:
-    """
-    根据关键词从 constants.LANDUSE_CLASSES 中动态查找对应的类别 ID
-    确保无论常数表如何调整，均可自动匹配
-    """
-    matched = []
-    for label, cls_id in LANDUSE_CLASSES:
-        for kw in keywords:
-            if kw in label:
-                matched.append(str(cls_id))
-                break
-    return ",".join(matched) if matched else fallback_id
 
 
 # =========================================================================
@@ -304,7 +288,6 @@ class BaseTaskWidget(QWidget):
                 transform = QgsCoordinateTransform(extent_crs, layer_crs, QgsProject.instance())
                 extent = transform.transformBoundingBox(extent)
         except Exception as e:
-            print(f"[clip] 坐标转换异常: {e}")
             return None
 
         if isinstance(layer, QgsRasterLayer):
@@ -316,7 +299,7 @@ class BaseTaskWidget(QWidget):
                 if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
                     return QgsRasterLayer(out_path, layer_name)
             except Exception as e:
-                print(f"[clip] 栅格裁切失败: {e}")
+                pass
         else:
             try:
                 from qgis import processing
@@ -328,7 +311,7 @@ class BaseTaskWidget(QWidget):
                     clipped.setName(layer_name)
                     return clipped
             except Exception as e:
-                print(f"[clip] 矢量裁切失败: {e}")
+                pass
         return None
 
 
@@ -337,7 +320,6 @@ class BaseTaskWidget(QWidget):
 # =========================================================================
 class LanduseMultiTaskWidget(BaseTaskWidget):
     """土地利用全要素多选综合解译"""
-
     def __init__(self, main_dock, parent=None):
         real_key = get_model_key_by_mode("landuse")
         super().__init__(main_dock, model_key=real_key, mode="landuse", parent=parent)
@@ -363,7 +345,6 @@ class LanduseMultiTaskWidget(BaseTaskWidget):
 
 class SingleThemeExtractionWidget(BaseTaskWidget):
     """单要素专项提取通用组件 (建筑 / 水体 / 林地 / 耕地 / 道路)"""
-
     def __init__(self, main_dock, target_class_id: str, desc: str, parent=None):
         self.fixed_target_class = target_class_id
         self.desc_text = desc
@@ -383,7 +364,6 @@ class SingleThemeExtractionWidget(BaseTaskWidget):
 
 class Sam3TaskWidget(BaseTaskWidget):
     """SAM3 交互大模型提示词解译"""
-
     def __init__(self, main_dock, parent=None):
         real_key = get_model_key_by_mode("sam3", fallback_key="sam3")
         super().__init__(main_dock, model_key=real_key, mode="sam3", parent=parent)
@@ -413,7 +393,6 @@ class Sam3TaskWidget(BaseTaskWidget):
 
 class ChangeDetectionTaskWidget(BaseTaskWidget):
     """深度双期影像变化检测"""
-
     def __init__(self, main_dock, parent=None):
         real_key = get_model_key_by_mode("change_detection", fallback_key="change_detection")
         super().__init__(main_dock, model_key=real_key, mode="change_detection", parent=parent)
@@ -442,10 +421,10 @@ class ChangeDetectionTaskWidget(BaseTaskWidget):
 
 
 # =========================================================================
-# 三、 10 大类本地免费遥感与 GIS 工具箱 (100% 本地极速 / 0 Token)
+# 三、 10 大类本地免费遥感与 GIS 工具箱
 # =========================================================================
 
-# 1. 全能遥感光谱指数计算器 (10+ 指数支持)
+# 1. 全能遥感光谱指数计算器
 class SpectralIndexTaskWidget(QWidget):
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -601,11 +580,11 @@ class SpectralIndexTaskWidget(QWidget):
             for sp in [self.spin_b1, self.spin_b2, self.spin_b3]:
                 sp.setMaximum(band_count)
             if band_count >= 4:
-                self.spin_b1.setValue(4);
-                self.spin_b2.setValue(3);
+                self.spin_b1.setValue(4)
+                self.spin_b2.setValue(3)
                 self.spin_b3.setValue(1)
             elif band_count >= 2:
-                self.spin_b1.setValue(2);
+                self.spin_b1.setValue(2)
                 self.spin_b2.setValue(1)
 
     def _activate_extent_tool(self):
@@ -668,17 +647,17 @@ class SpectralIndexTaskWidget(QWidget):
             b2 = ds.GetRasterBand(b2_idx).ReadAsArray().astype(np.float32)
 
             if idx_type == "savi":
-                L = 0.5;
-                denom = b1 + b2 + L;
+                L = 0.5
+                denom = b1 + b2 + L
                 denom[denom == 0] = np.nan
                 index_arr = ((b1 - b2) / denom) * (1.0 + L)
             elif idx_type == "evi":
                 b3 = ds.GetRasterBand(b3_idx).ReadAsArray().astype(np.float32)
-                denom = b1 + 6.0 * b2 - 7.5 * b3 + 1.0;
+                denom = b1 + 6.0 * b2 - 7.5 * b3 + 1.0
                 denom[denom == 0] = np.nan
                 index_arr = 2.5 * (b1 - b2) / denom
             elif idx_type == "fvc":
-                denom = b1 + b2;
+                denom = b1 + b2
                 denom[denom == 0] = np.nan
                 ndvi = (b1 - b2) / denom
                 index_arr = np.clip((ndvi - 0.05) / (0.70 - 0.05 + 1e-6), 0.0, 1.0)
@@ -689,18 +668,18 @@ class SpectralIndexTaskWidget(QWidget):
                 den[den == 0] = np.nan
                 index_arr = num / den
             else:
-                denom = b1 + b2;
+                denom = b1 + b2
                 denom[denom == 0] = np.nan
                 index_arr = (b1 - b2) / denom
 
             if self.cb_threshold.isChecked():
                 threshold = self.spin_threshold.value()
                 out_arr = np.where(index_arr >= threshold, 1, 0).astype(np.uint8)
-                out_dtype = gdal.GDT_Byte;
+                out_dtype = gdal.GDT_Byte
                 is_binary = True
             else:
-                out_arr = index_arr;
-                out_dtype = gdal.GDT_Float32;
+                out_arr = index_arr
+                out_dtype = gdal.GDT_Float32
                 is_binary = False
 
             time_str = datetime.now().strftime("%H%M%S")
@@ -714,7 +693,7 @@ class SpectralIndexTaskWidget(QWidget):
                 out_band.SetNoDataValue(-9999)
                 out_arr = np.nan_to_num(out_arr, nan=-9999)
             out_band.WriteArray(out_arr)
-            out_ds = None;
+            out_ds = None
             ds = None
 
             result_layer_name = f"{idx_name}_计算结果({datetime.now().strftime('%H:%M:%S')})"
@@ -722,13 +701,13 @@ class SpectralIndexTaskWidget(QWidget):
             if res_layer.isValid():
                 QgsProject.instance().addMapLayer(res_layer)
                 self.status_label.setText(f"计算完成！已加载图层: {result_layer_name}")
-                QMessageBox.information(self, "成功", f"指数计算完成，图层已加载！")
+                QMessageBox.information(self, "成功", "指数计算完成，图层已加载！")
         except Exception as e:
             self.status_label.setText("计算出错")
             QMessageBox.critical(self, "错误", f"指数计算失败: {e}")
 
 
-# 2. PCA 主成分分析 (多波段正交变换与降维)
+# 2. PCA 主成分分析
 class PcaTransformWidget(QWidget):
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -802,7 +781,7 @@ class PcaTransformWidget(QWidget):
                 pc_band = pcs[:, i].reshape(h, w)
                 out_ds.GetRasterBand(i + 1).WriteArray(pc_band)
 
-            out_ds = None;
+            out_ds = None
             ds = None
             res_layer = QgsRasterLayer(out_file, f"PCA主成分_{n_comp}B({time_str})")
             if res_layer.isValid():
@@ -814,7 +793,7 @@ class PcaTransformWidget(QWidget):
             QMessageBox.critical(self, "错误", f"PCA 变换失败: {e}")
 
 
-# 3. DEM 地形全要素分析 (坡度/坡向/阴影/起伏度)
+# 3. DEM 地形分析
 class DemAnalysisWidget(QWidget):
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -835,7 +814,6 @@ class DemAnalysisWidget(QWidget):
 
         param_group = QGroupBox("2. 地形分析类型")
         param_grid = QGridLayout(param_group)
-
         param_grid.addWidget(QLabel("分析功能:"), 0, 0)
         self.dem_type_combo = QComboBox()
         self.dem_type_combo.addItem("🗻 山体阴影 (Hillshade - 三维光照判读)", "hillshade")
@@ -894,7 +872,7 @@ class DemAnalysisWidget(QWidget):
             QMessageBox.critical(self, "错误", f"DEM 分析失败: {e}")
 
 
-# 4. 空间滤波与边缘轮廓检测 (Sobel / 高斯 / 锐化)
+# 4. 空间滤波与边缘轮廓检测
 class SpatialFilterWidget(QWidget):
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -915,7 +893,6 @@ class SpatialFilterWidget(QWidget):
 
         param_group = QGroupBox("2. 滤波与算子设置")
         param_grid = QGridLayout(param_group)
-
         param_grid.addWidget(QLabel("选择算子:"), 0, 0)
         self.filter_combo = QComboBox()
         self.filter_combo.addItem("🔎 Sobel 边缘梯度提取 (道路/地界识别)", "sobel")
@@ -962,7 +939,7 @@ class SpatialFilterWidget(QWidget):
             if f_type == "sobel":
                 kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
                 ky = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=np.float32)
-                gx = np.zeros_like(arr);
+                gx = np.zeros_like(arr)
                 gy = np.zeros_like(arr)
                 for r in range(1, arr.shape[0] - 1):
                     for c in range(1, arr.shape[1] - 1):
@@ -990,7 +967,7 @@ class SpatialFilterWidget(QWidget):
             out_ds.SetGeoTransform(ds.GetGeoTransform())
             out_ds.SetProjection(ds.GetProjection())
             out_ds.GetRasterBand(1).WriteArray(out_arr)
-            out_ds = None;
+            out_ds = None
             ds = None
 
             res_layer = QgsRasterLayer(out_file, f"滤波_{f_type}_{time_str}")
@@ -1003,7 +980,7 @@ class SpatialFilterWidget(QWidget):
             QMessageBox.critical(self, "错误", f"计算失败: {e}")
 
 
-# 5. 地物分类面积统计与报表工具
+# 5. 地物分类面积统计
 class AreaStatisticsWidget(QWidget):
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -1091,14 +1068,14 @@ class VectorSmoothSimplifyWidget(QWidget):
         param_group = QGroupBox("2. 几何精修参数")
         param_grid = QGridLayout(param_group)
         param_grid.addWidget(QLabel("化简容差距离 (米):"), 0, 0)
-        self.spin_tol = QDoubleSpinBox();
-        self.spin_tol.setRange(0.01, 100.0);
+        self.spin_tol = QDoubleSpinBox()
+        self.spin_tol.setRange(0.01, 100.0)
         self.spin_tol.setValue(1.0)
         param_grid.addWidget(self.spin_tol, 0, 1)
 
         param_grid.addWidget(QLabel("平滑迭代次数:"), 1, 0)
-        self.spin_iter = QSpinBox();
-        self.spin_iter.setRange(1, 10);
+        self.spin_iter = QSpinBox()
+        self.spin_iter.setRange(1, 10)
         self.spin_iter.setValue(2)
         param_grid.addWidget(self.spin_iter, 1, 1)
         layout.addWidget(param_group)
@@ -1146,7 +1123,7 @@ class VectorSmoothSimplifyWidget(QWidget):
             QMessageBox.critical(self, "错误", f"矢量精修异常: {e}")
 
 
-# 7. K-Means 智能无监督聚类
+# 7. K-Means 无监督聚类
 class KMeansClusterWidget(QWidget):
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -1168,14 +1145,14 @@ class KMeansClusterWidget(QWidget):
         param_group = QGroupBox("2. K-Means 聚类参数")
         param_grid = QGridLayout(param_group)
         param_grid.addWidget(QLabel("地物聚类类别数 (K):"), 0, 0)
-        self.spin_k = QSpinBox();
-        self.spin_k.setRange(2, 15);
+        self.spin_k = QSpinBox()
+        self.spin_k.setRange(2, 15)
         self.spin_k.setValue(5)
         param_grid.addWidget(self.spin_k, 0, 1)
 
         param_grid.addWidget(QLabel("最大迭代次数:"), 1, 0)
-        self.spin_iter = QSpinBox();
-        self.spin_iter.setRange(5, 50);
+        self.spin_iter = QSpinBox()
+        self.spin_iter.setRange(5, 50)
         self.spin_iter.setValue(15)
         param_grid.addWidget(self.spin_iter, 1, 1)
         layout.addWidget(param_group)
@@ -1229,14 +1206,14 @@ class KMeansClusterWidget(QWidget):
             out_ds.SetGeoTransform(ds.GetGeoTransform())
             out_ds.SetProjection(ds.GetProjection())
             out_ds.GetRasterBand(1).WriteArray(cluster_map)
-            out_ds = None;
+            out_ds = None
             ds = None
 
             res_layer = QgsRasterLayer(out_file, f"KMeans聚类(K={k})")
             if res_layer.isValid():
                 QgsProject.instance().addMapLayer(res_layer)
                 self.status_label.setText(f"聚类完成！共生成 {k} 个地物类别")
-                QMessageBox.information(self, "成功", f"K-Means 聚类成功！")
+                QMessageBox.information(self, "成功", "K-Means 聚类成功！")
         except Exception as e:
             self.status_label.setText("聚类失败")
             QMessageBox.critical(self, "错误", f"K-Means 执行异常: {e}")
@@ -1257,11 +1234,11 @@ class RasterDiffChangeWidget(QWidget):
         layer_group = QGroupBox("1. 输入双期影像")
         layer_v = QVBoxLayout(layer_group)
         layer_v.addWidget(QLabel("基准期 (T1 前期):"))
-        self.combo_t1 = QgsMapLayerComboBox();
+        self.combo_t1 = QgsMapLayerComboBox()
         self.combo_t1.setFilters(RASTER_LAYER_FILTER)
         layer_v.addWidget(self.combo_t1)
         layer_v.addWidget(QLabel("变化期 (T2 后期):"))
-        self.combo_t2 = QgsMapLayerComboBox();
+        self.combo_t2 = QgsMapLayerComboBox()
         self.combo_t2.setFilters(RASTER_LAYER_FILTER)
         layer_v.addWidget(self.combo_t2)
         layout.addWidget(layer_group)
@@ -1269,14 +1246,14 @@ class RasterDiffChangeWidget(QWidget):
         param_group = QGroupBox("2. 差分参数")
         param_grid = QGridLayout(param_group)
         param_grid.addWidget(QLabel("差分波段:"), 0, 0)
-        self.spin_band = QSpinBox();
-        self.spin_band.setRange(1, 64);
+        self.spin_band = QSpinBox()
+        self.spin_band.setRange(1, 64)
         self.spin_band.setValue(1)
         param_grid.addWidget(self.spin_band, 0, 1)
 
         param_grid.addWidget(QLabel("变化灵敏度阈值:"), 1, 0)
-        self.spin_thresh = QDoubleSpinBox();
-        self.spin_thresh.setRange(1.0, 500.0);
+        self.spin_thresh = QDoubleSpinBox()
+        self.spin_thresh.setRange(1.0, 500.0)
         self.spin_thresh.setValue(30.0)
         param_grid.addWidget(self.spin_thresh, 1, 1)
 
@@ -1299,7 +1276,7 @@ class RasterDiffChangeWidget(QWidget):
         layout.addStretch()
 
     def _run_diff(self):
-        l1 = self.combo_t1.currentLayer();
+        l1 = self.combo_t1.currentLayer()
         l2 = self.combo_t2.currentLayer()
         if not l1 or not l2:
             QMessageBox.warning(self, "提示", "请选择两期输入图层")
@@ -1311,7 +1288,7 @@ class RasterDiffChangeWidget(QWidget):
         QApplication.processEvents()
 
         try:
-            ds1 = gdal.Open(l1.source());
+            ds1 = gdal.Open(l1.source())
             ds2 = gdal.Open(l2.source())
             arr1 = ds1.GetRasterBand(b_idx).ReadAsArray().astype(np.float32)
             arr2 = ds2.GetRasterBand(b_idx).ReadAsArray().astype(np.float32)
@@ -1343,8 +1320,8 @@ class RasterDiffChangeWidget(QWidget):
                 vec_layer = QgsVectorLayer(out_shp, f"像元差分变化斑块({time_str})", "ogr")
                 if vec_layer.isValid(): QgsProject.instance().addMapLayer(vec_layer)
 
-            out_ds = None;
-            ds1 = None;
+            out_ds = None
+            ds1 = None
             ds2 = None
             diff_layer = QgsRasterLayer(out_tif, f"像元变化掩膜({time_str})")
             if diff_layer.isValid():
@@ -1378,20 +1355,20 @@ class ImageEnhanceWidget(QWidget):
         param_group = QGroupBox("2. RGB 通道波段分配")
         param_grid = QGridLayout(param_group)
         param_grid.addWidget(QLabel("红通道 (R):"), 0, 0)
-        self.spin_r = QSpinBox();
-        self.spin_r.setRange(1, 64);
+        self.spin_r = QSpinBox()
+        self.spin_r.setRange(1, 64)
         self.spin_r.setValue(4)
         param_grid.addWidget(self.spin_r, 0, 1)
 
         param_grid.addWidget(QLabel("绿通道 (G):"), 1, 0)
-        self.spin_g = QSpinBox();
-        self.spin_g.setRange(1, 64);
+        self.spin_g = QSpinBox()
+        self.spin_g.setRange(1, 64)
         self.spin_g.setValue(3)
         param_grid.addWidget(self.spin_g, 1, 1)
 
         param_grid.addWidget(QLabel("蓝通道 (B):"), 2, 0)
-        self.spin_b = QSpinBox();
-        self.spin_b.setRange(1, 64);
+        self.spin_b = QSpinBox()
+        self.spin_b.setRange(1, 64)
         self.spin_b.setValue(2)
         param_grid.addWidget(self.spin_b, 2, 1)
 
@@ -1419,8 +1396,8 @@ class ImageEnhanceWidget(QWidget):
             QMessageBox.warning(self, "提示", "请选择栅格图层")
             return
 
-        r_idx = self.spin_r.value();
-        g_idx = self.spin_g.value();
+        r_idx = self.spin_r.value()
+        g_idx = self.spin_g.value()
         b_idx = self.spin_b.value()
         self.status_label.setText("正在合成与拉伸波段...")
         QApplication.processEvents()
@@ -1443,7 +1420,7 @@ class ImageEnhanceWidget(QWidget):
             out_ds.SetProjection(ds.GetProjection())
             for i, b_arr in enumerate(bands_data):
                 out_ds.GetRasterBand(i + 1).WriteArray(b_arr)
-            out_ds = None;
+            out_ds = None
             ds = None
 
             res_layer = QgsRasterLayer(out_file, f"增强假彩色({time_str})")
@@ -1478,8 +1455,8 @@ class RasterPolygonizeWidget(QWidget):
         param_group = QGroupBox("2. 过滤与转换参数")
         param_grid = QGridLayout(param_group)
         param_grid.addWidget(QLabel("过滤孤立碎斑阈值 (像元数):"), 0, 0)
-        self.spin_sieve = QSpinBox();
-        self.spin_sieve.setRange(0, 500);
+        self.spin_sieve = QSpinBox()
+        self.spin_sieve.setRange(0, 500)
         self.spin_sieve.setValue(4)
         param_grid.addWidget(self.spin_sieve, 0, 1)
         layout.addWidget(param_group)
@@ -1522,7 +1499,7 @@ class RasterPolygonizeWidget(QWidget):
             shp_layer.CreateField(ogr.FieldDefn("DN", ogr.OFTInteger))
 
             gdal.Polygonize(src_band, src_band, shp_layer, 0, [], callback=None)
-            shp_ds = None;
+            shp_ds = None
             ds = None
 
             vlayer = QgsVectorLayer(out_shp, f"矢量多边形图斑({time_str})", "ogr")
@@ -1534,8 +1511,9 @@ class RasterPolygonizeWidget(QWidget):
             self.status_label.setText("矢量化失败")
             QMessageBox.critical(self, "错误", f"转换失败: {e}")
 
+
 # =========================================================================
-# 四、 账号与服务网关设置页 (纯极简版，仅保留刷新网关)
+# 四、 账号与服务网关设置页
 # =========================================================================
 class AccountSettingsPage(QWidget):
     def __init__(self, main_dock, parent=None):
@@ -1549,7 +1527,7 @@ class AccountSettingsPage(QWidget):
         layout.setSpacing(12)
 
         # 1. 用户信息卡片
-        acc_group = QGroupBox("用户信息")
+        acc_group = QGroupBox("用户信息与凭证")
         acc_layout = QVBoxLayout(acc_group)
 
         self.account_status_label = QLabel("尚未登录")
@@ -1560,7 +1538,7 @@ class AccountSettingsPage(QWidget):
         acc_layout.addWidget(self.quota_label)
 
         btn_row = QHBoxLayout()
-        self.login_btn = QPushButton("登录 / 注册")
+        self.login_btn = QPushButton("🔑 登录 / 注册")
         self.login_btn.clicked.connect(self.dock.open_login_dialog)
         btn_row.addWidget(self.login_btn)
 
@@ -1569,13 +1547,13 @@ class AccountSettingsPage(QWidget):
         self.logout_btn.setVisible(False)
         btn_row.addWidget(self.logout_btn)
 
-        self.upgrade_btn = QPushButton("套餐与充值")
+        self.upgrade_btn = QPushButton("💎 套餐与充值")
         self.upgrade_btn.clicked.connect(self.dock.open_plan_dialog)
         btn_row.addWidget(self.upgrade_btn)
         acc_layout.addLayout(btn_row)
         layout.addWidget(acc_group)
 
-        # 2. 网络与服务状态（仅保留刷新按钮）
+        # 2. 网络与服务状态
         server_group = QGroupBox("服务网关")
         server_layout = QVBoxLayout(server_group)
 
@@ -1622,7 +1600,6 @@ class AccountSettingsPage(QWidget):
         self.refresh_url_btn.setText("正在同步网关...")
         QApplication.processEvents()
         try:
-            # 强制刷新缓存
             new_url = self.dock.get_remote_or_default_url(force_refresh=True)
             if new_url and new_url != self.dock.FALLBACK_SERVER_URL:
                 QMessageBox.information(self, "成功", "已成功同步最新服务网关通道！")
@@ -1636,150 +1613,10 @@ class AccountSettingsPage(QWidget):
 
 
 # =========================================================================
-# 五、 首页卡片式功能大厅 (HomePage)
-# =========================================================================
-class TaskCardButton(QPushButton):
-    def __init__(self, icon_str: str, title: str, subtitle: str, is_free: bool = False, parent=None):
-        super().__init__(parent)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(56)
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                border: 1px solid #e2e8f0;
-                border-radius: 8px;
-                padding: 6px;
-                text-align: left;
-            }
-            QPushButton:hover {
-                border-color: #3b82f6;
-                background-color: #f8fafc;
-            }
-        """)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(8)
-
-        lbl_icon = QLabel(icon_str)
-        lbl_icon.setStyleSheet("font-size: 18px; border: none; background: transparent;")
-        layout.addWidget(lbl_icon)
-
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(1)
-
-        title_row = QHBoxLayout()
-        lbl_title = QLabel(title)
-        lbl_title.setStyleSheet(
-            "font-size: 12px; font-weight: bold; color: #1e293b; border: none; background: transparent;")
-        title_row.addWidget(lbl_title)
-
-        if is_free:
-            lbl_badge = QLabel("免费")
-            lbl_badge.setStyleSheet(
-                "font-size: 9px; color: #16a34a; background-color: #dcfce7; border-radius: 4px; padding: 0px 3px; font-weight: bold;")
-            title_row.addWidget(lbl_badge)
-        title_row.addStretch()
-        text_layout.addLayout(title_row)
-
-        lbl_sub = QLabel(subtitle)
-        lbl_sub.setWordWrap(True)
-        lbl_sub.setStyleSheet("font-size: 10px; color: #64748b; border: none; background: transparent;")
-        text_layout.addWidget(lbl_sub)
-
-        layout.addLayout(text_layout, stretch=1)
-
-        arrow = QLabel("›")
-        arrow.setStyleSheet(
-            "font-size: 16px; color: #94a3b8; font-weight: bold; border: none; background: transparent;")
-        layout.addWidget(arrow)
-
-
-class HomePage(QWidget):
-    taskSelected = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._build_ui()
-
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        self.copilot_btn = QPushButton("✨ GeoMind AI Copilot (自然语言驱动大模型指令)")
-        self.copilot_btn.setStyleSheet("""
-                            QPushButton {
-                                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1e3a8a, stop:1 #3b82f6);
-                                color: white; font-weight: bold; font-size: 13px; border-radius: 8px; padding: 10px;
-                            }
-                            QPushButton:hover { background: #1d4ed8; }
-                        """)
-        self.copilot_btn.clicked.connect(lambda: self.taskSelected.emit("task_copilot"))
-        layout.addWidget(self.copilot_btn)
-
-        lbl_group_free = QLabel("🎈 本地免费遥感全能工具箱 (0额度 / 免联网 / 极速)")
-        lbl_group_free.setStyleSheet("font-weight: bold; color: #047857; font-size: 12px; margin-top: 2px;")
-        layout.addWidget(lbl_group_free)
-
-        free_cards = [
-            ("🍀", "全能遥感光谱指数库", "NDVI/GNDVI/EVI/SAVI/FVC/NDWI/BSI 等10+", True, "task_spectral_index"),
-            ("🔮", "遥感 PCA 主成分分析", "多波段正交变换，去冗余生成PC1/2/3", True, "task_pca"),
-            ("🗻", "DEM 地形全要素分析", "山体阴影/坡度/坡向/起伏度(TRI)", True, "task_dem"),
-            ("🔎", "空间滤波与边缘提取", "Sobel边界提取+高斯降噪+高通锐化", True, "task_filter"),
-            ("🍰", "地物分类面积统计报表", "一键统计各类别像元数、面积与亩数", True, "task_area"),
-            ("🎀", "矢量图斑化简与平滑", "边界精修，消除锯齿边", True, "task_vector_smooth"),
-            ("🍭", "K-Means 智能无监督聚类", "多波段自动聚类，划分地物类别", True, "task_kmeans"),
-            ("🐣", "双期像元差分变化检测", "两期影像绝对差分比对+矢量化", True, "task_raster_diff"),
-            ("🌈", "假彩色合成与画质增强", "波段合成+2%动态对比度拉伸", True, "task_enhance"),
-            ("🧩", "栅格一键矢量化与过滤", "掩膜生成矢量图斑+碎斑过滤", True, "task_polygonize"),
-        ]
-
-        free_grid = QGridLayout()
-        free_grid.setHorizontalSpacing(6)
-        free_grid.setVerticalSpacing(6)
-        for i, (icon, title, desc, is_free, key) in enumerate(free_cards):
-            btn = TaskCardButton(icon, title, desc, is_free=is_free)
-            btn.clicked.connect(lambda checked=False, k=key: self.taskSelected.emit(k))
-            free_grid.addWidget(btn, i // 2, i % 2)
-        layout.addLayout(free_grid)
-
-        lbl_group_ai = QLabel("🧠 AI 深度学习专项解译大模型")
-        lbl_group_ai.setStyleSheet("font-weight: bold; color: #1e3a8a; font-size: 12px; margin-top: 6px;")
-        layout.addWidget(lbl_group_ai)
-
-        ai_cards = [
-            ("🌻", "土地利用全要素综合解译", "全要素语义分割大模型", False, "task_landuse_multi"),
-            ("🏡", "建筑物专项提取", "城镇与乡村建筑轮廓提取", False, "task_building"),
-            ("🚗", "道路交通专项提取", "公路街道主干路网提取", False, "task_road"),
-            ("🐬", "水系水体专项提取", "河流湖泊水库池塘边界提取", False, "task_water"),
-            ("🍄", "林草植被专项提取", "林地灌木草地覆盖提取", False, "task_vegetation"),
-            ("🥕", "农田耕地专项提取", "耕地与农田图斑智能勾画", False, "task_farmland"),
-            ("🌟", "SAM3 交互提示解译", "英文Prompt提示词智能提取", False, "task_sam3"),
-            ("🐥", "深度双期影像变化检测", "AI两期时相特征比对", False, "task_change"),
-        ]
-
-        ai_grid = QGridLayout()
-        ai_grid.setHorizontalSpacing(6)
-        ai_grid.setVerticalSpacing(6)
-        for i, (icon, title, desc, is_free, key) in enumerate(ai_cards):
-            btn = TaskCardButton(icon, title, desc, is_free=is_free)
-            btn.clicked.connect(lambda checked=False, k=key: self.taskSelected.emit(k))
-            ai_grid.addWidget(btn, i // 2, i % 2)
-        layout.addLayout(ai_grid)
-
-        layout.addStretch()
-
-
-from .llm_agent import BackendCopilotTask
-import json
-import traceback
-
-
-# =========================================================================
-# 五-1. AI Copilot 对话交互组件 (后端中枢驱动版)
+# 五、 AI Copilot 对话交互主界面 (启动即主页，左下角集成 Key 与 Tools)
 # =========================================================================
 class LlmCopilotWidget(QWidget):
-    """AI Copilot 对话交互窗口 (全权交由后端调度)"""
+    """AI Copilot 智能助手主对话窗口 (现代多模态对话框)"""
 
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -1796,41 +1633,42 @@ class LlmCopilotWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        # ---------------- 1. 顶部操作栏 ----------------
+        # ---------------- 1. 顶部轻量操作栏 (放置 清空 与 停止 按钮) ----------------
         top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(2, 0, 2, 0)
         top_bar.setSpacing(6)
 
         self.clear_btn = QPushButton("🧹 新建 / 清空会话")
-        self.clear_btn.setToolTip("清空当前对话历史，开启全新会话")
+        self.clear_btn.setToolTip("清空历史记录并开启新会话")
         self.clear_btn.setStyleSheet("""
             QPushButton {
                 background-color: #ffffff;
                 color: #475569;
                 border: 1px solid #cbd5e1;
                 border-radius: 5px;
-                padding: 4px 8px;
-                font-size: 12px;
+                padding: 3px 8px;
+                font-size: 11px;
             }
             QPushButton:hover { background-color: #f1f5f9; color: #0f172a; }
         """)
         self.clear_btn.clicked.connect(self._clear_and_new_session)
         top_bar.addWidget(self.clear_btn)
 
-        self.stop_btn = QPushButton("⏹️ 停止 AI")
-        self.stop_btn.setToolTip("中断当前正在进行的 AI 思考或云端计算任务")
+        self.stop_btn = QPushButton("⏹️ 停止生成")
         self.stop_btn.setEnabled(False)
+        self.stop_btn.setToolTip("中断当前 AI 思考或任务")
         self.stop_btn.setStyleSheet("""
             QPushButton {
                 background-color: #fef2f2;
                 color: #dc2626;
                 border: 1px solid #fca5a5;
                 border-radius: 5px;
-                padding: 4px 8px;
-                font-size: 12px;
+                padding: 3px 8px;
+                font-size: 11px;
                 font-weight: bold;
             }
             QPushButton:hover { background-color: #fee2e2; }
-            QPushButton:disabled { background-color: #f8fafc; color: #cbd5e1; border-color: #e2e8f0; }
+            QPushButton:disabled { background-color: transparent; color: #cbd5e1; border-color: transparent; }
         """)
         self.stop_btn.clicked.connect(self._stop_current_task)
         top_bar.addWidget(self.stop_btn)
@@ -1838,52 +1676,194 @@ class LlmCopilotWidget(QWidget):
         top_bar.addStretch()
         layout.addLayout(top_bar)
 
-        # ---------------- 2. 对话历史展示区 ----------------
+        # ---------------- 2. 聊天历史主展示区 ----------------
         self.history_browser = QTextEdit()
         self.history_browser.setReadOnly(True)
-        self.history_browser.setStyleSheet(
-            "background-color: #f8fafc; font-size: 13px; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;"
-        )
+        self.history_browser.setStyleSheet("""
+            QTextEdit {
+                background-color: #ffffff;
+                font-size: 13px;
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                padding: 8px;
+                line-height: 140%;
+            }
+        """)
         self._reset_welcome_message()
-        layout.addWidget(self.history_browser)
+        layout.addWidget(self.history_browser, stretch=1)
 
-        # ---------------- 3. 输入框与发送按钮 ----------------
-        input_layout = QHBoxLayout()
+        # ---------------- 3. 现代输入卡片区域 ----------------
+        input_card = QFrame()
+        input_card.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+            }
+        """)
+        card_layout = QVBoxLayout(input_card)
+        card_layout.setContentsMargins(8, 6, 8, 6)
+        card_layout.setSpacing(6)
+
+        # 3.1 文本输入框
         self.input_edit = QLineEdit()
-        self.input_edit.setPlaceholderText("输入您的遥感分析或 GIS 处理指令 (按回车发送)...")
+        self.input_edit.setPlaceholderText("💡 告诉我您的遥感分析或 GIS 需求 (按回车直接发送)...")
+        self.input_edit.setStyleSheet("border: none; font-size: 13px; padding: 4px; background: transparent;")
         self.input_edit.returnPressed.connect(self._send_msg)
-        input_layout.addWidget(self.input_edit, stretch=4)
+        card_layout.addWidget(self.input_edit)
 
+        # 3.2 底部工具栏 (仅保留左侧 Key / Tools，右侧 发送，彻底解决拥挤)
+        bottom_toolbar = QHBoxLayout()
+        bottom_toolbar.setSpacing(6)
+
+        # === 左侧: Key 配置 ===
+        self.btn_key = QPushButton("🔑 Key / 账号")
+        self.btn_key.setToolTip("管理您的 API Key、登录凭证及账户额度")
+        self.btn_key.setStyleSheet("""
+            QPushButton {
+                background-color: #f1f5f9;
+                color: #334155;
+                border: 1px solid #cbd5e1;
+                border-radius: 5px;
+                padding: 4px 8px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e2e8f0; color: #0f172a; }
+        """)
+        self.btn_key.clicked.connect(self.dock.show_account_page)
+        bottom_toolbar.addWidget(self.btn_key)
+
+        # === 左侧: Tools 工具箱 ===
+        self.btn_tools = QPushButton("🧰 Tools 遥感工具箱 ▾")
+        self.btn_tools.setToolTip("打开本地 10 大免费遥感工具与 8 大 AI 专项大模型")
+        self.btn_tools.setStyleSheet("""
+            QPushButton {
+                background-color: #eff6ff;
+                color: #1d4ed8;
+                border: 1px solid #bfdbfe;
+                border-radius: 5px;
+                padding: 4px 8px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #dbeafe; border-color: #93c5fd; }
+        """)
+        self._build_tools_menu()
+        bottom_toolbar.addWidget(self.btn_tools)
+
+        bottom_toolbar.addStretch()
+
+        # === 右侧: 发送按钮 ===
         self.send_btn = QPushButton("🚀 发送")
-        self.send_btn.setStyleSheet(
-            "background-color: #2563eb; color: white; font-weight: bold; border-radius: 6px; padding: 6px 14px;")
+        self.send_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2563eb;
+                color: white;
+                font-weight: bold;
+                border-radius: 5px;
+                padding: 4px 14px;
+                font-size: 12px;
+                border: none;
+            }
+            QPushButton:hover { background-color: #1d4ed8; }
+            QPushButton:disabled { background-color: #cbd5e1; }
+        """)
         self.send_btn.clicked.connect(self._send_msg)
-        input_layout.addWidget(self.send_btn, stretch=1)
-        layout.addLayout(input_layout)
+        bottom_toolbar.addWidget(self.send_btn)
 
-        # ---------------- 4. 底部安全警示 ----------------
-        self.disclaimer_label = QLabel("💡 <b>提示</b>：AI 模型运算可能存在出错风险，请在运行前做好数据保存工作。")
+        card_layout.addLayout(bottom_toolbar)
+        layout.addWidget(input_card)
+
+        # ---------------- 4. 底部轻量提示 ----------------
+        self.disclaimer_label = QLabel("💡 <b>提示</b>：模型可能出错，请在运行前做好数据保存工作。")
         self.disclaimer_label.setStyleSheet("""
             QLabel {
-                background-color: #fffbeb;
-                border: 1px solid #fde68a;
+                background-color: #f8fafc;
+                border: 1px solid #e2e8f0;
                 border-radius: 5px;
-                padding: 4px 6px;
-                color: #b45309;
+                padding: 3px 6px;
+                color: #64748b;
                 font-size: 11px;
-                line-height: 130%;
             }
         """)
         self.disclaimer_label.setWordWrap(True)
         layout.addWidget(self.disclaimer_label)
 
+    def _build_tools_menu(self):
+        """构建 Tools 下拉菜单 (包含免费工具与 AI 大模型)"""
+        tools_menu = QMenu(self)
+        tools_menu.setStyleSheet("""
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                padding: 4px;
+                font-size: 12px;
+            }
+            QMenu::item {
+                padding: 6px 18px 6px 12px;
+                border-radius: 4px;
+                color: #334155;
+            }
+            QMenu::item:selected {
+                background-color: #f1f5f9;
+                color: #1e3a8a;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #e2e8f0;
+                margin: 4px 6px;
+            }
+        """)
+
+        # 分组一: 10 大免费本地工具
+        free_menu = tools_menu.addMenu("🎈 本地免费遥感工具箱 (0额度/免联网)")
+        free_menu.setStyleSheet(tools_menu.styleSheet())
+        free_tools = [
+            ("🍀 全能遥感光谱指数库", "task_spectral_index"),
+            ("🔮 遥感 PCA 主成分分析", "task_pca"),
+            ("🗻 DEM 地形全要素分析", "task_dem"),
+            ("🔎 空间滤波与边缘提取", "task_filter"),
+            ("🍰 地物分类面积统计报表", "task_area"),
+            ("🎀 矢量图斑化简与平滑", "task_vector_smooth"),
+            ("🍭 K-Means 智能无监督聚类", "task_kmeans"),
+            ("🐣 双期像元差分变化检测", "task_raster_diff"),
+            ("🌈 假彩色合成与画质增强", "task_enhance"),
+            ("🧩 栅格一键矢量化与过滤", "task_polygonize"),
+        ]
+        for title, key in free_tools:
+            act = QAction(title, self)
+            act.triggered.connect(lambda chk=False, k=key: self.dock.navigate_to_task(k))
+            free_menu.addAction(act)
+
+        # 分组二: 8 大 AI 专项大模型
+        ai_menu = tools_menu.addMenu("🧠 AI 深度学习专项解译大模型")
+        ai_menu.setStyleSheet(tools_menu.styleSheet())
+        ai_tools = [
+            ("🌻 土地利用全要素综合解译", "task_landuse_multi"),
+            ("🏡 建筑物专项提取", "task_building"),
+            ("🚗 道路交通专项提取", "task_road"),
+            ("🐬 水系水体专项提取", "task_water"),
+            ("🍄 林草植被专项提取", "task_vegetation"),
+            ("🥕 农田耕地专项提取", "task_farmland"),
+            ("🌟 SAM3 交互提示解译", "task_sam3"),
+            ("🐥 深度双期影像变化检测", "task_change"),
+        ]
+        for title, key in ai_tools:
+            act = QAction(title, self)
+            act.triggered.connect(lambda chk=False, k=key: self.dock.navigate_to_task(k))
+            ai_menu.addAction(act)
+
+        self.btn_tools.setMenu(tools_menu)
+
     def _reset_welcome_message(self):
         self.history_browser.setHtml(
-            "<b>🤖 GeoMind Copilot</b>: 你好！我是你的遥感与 GIS 智能助手。<br>"
-            "<i>您可以直接对我说：<br>"
-            " • “帮我把道路图层做个 20 米缓冲区”<br>"
-            " • “计算 image 图层的 NDVI 植被指数”<br>"
-            " • “提取影像中的所有建筑物轮廓”</i>"
+            "<b>🤖 GeoMind Copilot</b>: 您好！我是您的智能遥感与 GIS 助手。<br><br>"
+            "您可以直接输入自然语言指令指挥我完成任务，或通过左下角 <b>🧰 Tools</b> 选择专项工具面板：<br>"
+            " • <i>“帮我把选中的图层做 50 米缓冲区”</i><br>"
+            " • <i>“提取当前视图中的所有水体并矢量化”</i><br>"
+            " • <i>“计算多波段影像的 NDVI 植被指数”</i>"
         )
 
     def _clear_and_new_session(self):
@@ -1916,7 +1896,7 @@ class LlmCopilotWidget(QWidget):
             stopped = True
 
         if stopped:
-            self.history_browser.append("<br><b style='color:#dc2626'>⏹️ 用户已停止当前任务。</b>")
+            self.history_browser.append("<br><b style='color:#dc2626'>⏹️ 用户已打断当前任务。</b>")
             self._reset_btn()
 
     def _send_msg(self):
@@ -1933,25 +1913,22 @@ class LlmCopilotWidget(QWidget):
         self.history_browser.append(f"<br><b style='color:#0f766e'>🧑‍💻 你:</b> {text}")
 
         self.send_btn.setEnabled(False)
-        self.send_btn.setText("AI 思考中...")
+        self.send_btn.setText("思考中...")
         self.stop_btn.setEnabled(True)
 
         self.chat_history.append({"role": "user", "content": text})
         self._request_backend_copilot()
 
     def _request_backend_copilot(self):
-        """向后端发起流式对话请求"""
         active_layers = [l.name() for l in QgsProject.instance().mapLayers().values()]
         server_url = self.dock.current_server_url()
         token = self.dock.token
-        machine_id = getattr(self.dock, "machine_id", "")  # 👈 获取机器码
+        machine_id = getattr(self.dock, "machine_id", "")
 
         self._current_assistant_reply = ""
         self._has_started_reasoning = False
         self._has_started_text = False
 
-        from .llm_agent import BackendCopilotTask
-        # 👈 传入 machine_id
         task = BackendCopilotTask(server_url, token, self.chat_history, active_layers, machine_id=machine_id)
         task.chunkReceived.connect(self._on_chunk_received)
         task.taskError.connect(self._on_copilot_error)
@@ -1967,13 +1944,11 @@ class LlmCopilotWidget(QWidget):
         cursor = self.history_browser.textCursor()
         cursor.movePosition(QTextCursor.End)
 
-        # 🌟 修复：捕获并显示后端传过来的错误信息
         if msg_type == "error":
             self.history_browser.append(f"<br><b style='color:#dc2626'>❌ 大模型响应异常:</b> {content}")
             self._reset_btn()
             return
 
-        # 1. 深度思考流 (Reasoning)
         elif msg_type == "reasoning" and content:
             if not self._has_started_reasoning:
                 self._has_started_reasoning = True
@@ -1988,7 +1963,6 @@ class LlmCopilotWidget(QWidget):
             cursor.insertText(content, fmt)
             self._scroll_to_bottom()
 
-        # 2. 正常回答文本流 (Text)
         elif msg_type == "text" and content:
             if not self._has_started_text:
                 self._has_started_text = True
@@ -2003,16 +1977,13 @@ class LlmCopilotWidget(QWidget):
             cursor.insertText(content, fmt)
             self._scroll_to_bottom()
 
-        # 3. 工具调用 (Tool Call)
         elif msg_type == "tool_call":
             tool_calls = data.get("tool_calls", [])
-            # 记录 assistant 的 tool_calls 消息
             self.chat_history.append({
                 "role": "assistant",
                 "content": self._current_assistant_reply or None,
                 "tool_calls": tool_calls
             })
-            # 🌟 关键：立即清空暂存，防止 _on_copilot_finished 重复追加残缺消息
             self._current_assistant_reply = ""
 
             for tc in tool_calls:
@@ -2030,7 +2001,6 @@ class LlmCopilotWidget(QWidget):
 
                 self.history_browser.append(f"<i style='color:#059669; font-size:12px'>✅ [执行结果]: {res}</i>")
 
-                # 记录一一对应的 tool 响应
                 self.chat_history.append({
                     "tool_call_id": tc["id"],
                     "role": "tool",
@@ -2062,7 +2032,6 @@ class LlmCopilotWidget(QWidget):
         self._scroll_to_bottom()
 
     def _execute_local_skill(self, fn_name: str, args: dict) -> str:
-        """分发并运行具体的 GIS 算子或云端 AI 任务"""
         from .llm_skills import (
             get_active_layers, skill_calc_spectral_index, skill_run_pca,
             skill_dem_analysis, skill_spatial_filter, skill_area_statistics,
@@ -2107,7 +2076,6 @@ class LlmCopilotWidget(QWidget):
         elif fn_name == "qgis_run_algorithm":
             return qgis_run_algorithm(**args)
 
-        # AI 云端大模型异步任务派发
         elif fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
             canvas = self.dock.canvas
             extent = canvas.extent()
@@ -2148,7 +2116,6 @@ class LlmCopilotWidget(QWidget):
         return f"未找到可执行工具: {fn_name}"
 
     def _on_ai_task_ok(self, result_path, content_type):
-        from datetime import datetime
         layer_name = f"AI解译结果({datetime.now().strftime('%H:%M:%S')})"
         if result_path.endswith('.tif'):
             new_layer = QgsRasterLayer(result_path, layer_name)
@@ -2167,6 +2134,7 @@ class LlmCopilotWidget(QWidget):
         self.history_browser.append(f"<b style='color:red'>❌ 云端解译失败:</b> {err_msg}")
         self._active_ai_task = None
         self._reset_btn()
+
 
 # =========================================================================
 # 六、 顶层主停靠面板容器 (ImageInterpretDockWidget)
@@ -2188,7 +2156,6 @@ class ImageInterpretDockWidget(QDockWidget):
         self._build_ui()
         self._load_settings()
         self._try_restore_login()
-        self.task_pages["task_copilot"] = ("✨ AI Copilot 智能助手", self.stack.addWidget(LlmCopilotWidget(self)))
 
     def _build_ui(self):
         container = QWidget()
@@ -2207,8 +2174,8 @@ class ImageInterpretDockWidget(QDockWidget):
             QPushButton#runBtn:disabled { background-color: #cbd5e1; color: #94a3b8; }
             QPushButton#cancelBtn { background-color: #fef2f2; color: #dc2626; border: 1px solid #fca5a5; }
             QPushButton#cancelBtn:hover { background-color: #fee2e2; }
-            QToolButton#iconBtn { border: none; background: transparent; font-size: 14px; padding: 4px; border-radius: 4px; }
-            QToolButton#iconBtn:hover { background-color: #e2e8f0; }
+            QToolButton#iconBtn { border: none; background: transparent; font-size: 13px; padding: 4px 8px; border-radius: 4px; color: #334155; }
+            QToolButton#iconBtn:hover { background-color: #e2e8f0; color: #0f172a; }
             QLineEdit, QComboBox, QTextEdit, QSpinBox, QDoubleSpinBox { border: 1px solid #cbd5e1; border-radius: 6px; padding: 5px; background-color: #ffffff; color: #1e293b; }
             QTableWidget { border: 1px solid #cbd5e1; border-radius: 6px; background-color: #ffffff; gridline-color: #f1f5f9; }
             QProgressBar { border: none; background-color: #e2e8f0; border-radius: 4px; height: 8px; text-align: center; }
@@ -2218,21 +2185,21 @@ class ImageInterpretDockWidget(QDockWidget):
         """)
 
         main_layout = QVBoxLayout(container)
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
 
-        # ---------------- 顶部全局导航栏 ----------------
+        # ---------------- 顶部全局导航条 ----------------
         top_bar = QHBoxLayout()
         self.back_btn = QToolButton()
         self.back_btn.setObjectName("iconBtn")
-        self.back_btn.setText("🐾 返回")
-        self.back_btn.setToolTip("返回首页")
-        self.back_btn.clicked.connect(self.show_home_page)
+        self.back_btn.setText("💬 返回 AI 对话")
+        self.back_btn.setToolTip("返回 Copilot 对话主窗口")
+        self.back_btn.clicked.connect(self.show_copilot_page)
         self.back_btn.setVisible(False)
         top_bar.addWidget(self.back_btn)
 
-        self.title_label = QLabel("GeoAI 遥感智能解译终端")
-        self.title_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #0f172a;")
+        self.title_label = QLabel("✨ GeoMind AI Copilot")
+        self.title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #0f172a;")
         top_bar.addWidget(self.title_label)
         top_bar.addStretch()
 
@@ -2244,19 +2211,18 @@ class ImageInterpretDockWidget(QDockWidget):
         top_bar.addWidget(self.account_btn)
         main_layout.addLayout(top_bar)
 
-        # ---------------- 多页面堆栈 ----------------
+        # ---------------- 多页面堆栈容器 ----------------
         self.stack = QStackedWidget()
 
-        # 1. 首页
-        self.home_page = HomePage()
-        self.home_page.taskSelected.connect(self._navigate_to_task)
-        self.stack.addWidget(self.home_page)
+        # 1. 默认首页 (Index 0): AI Copilot 对话主页
+        self.copilot_page = LlmCopilotWidget(self)
+        self.stack.addWidget(self.copilot_page)
 
-        # 2. 账号中心
+        # 2. 账号中心页 (Index 1)
         self.account_page = AccountSettingsPage(self)
         self.stack.addWidget(self.account_page)
 
-        # 3. 注册所有工具页面
+        # 3. 注册所有专项工具页面
         self.task_pages = {}
 
         # 免费工具
@@ -2271,25 +2237,25 @@ class ImageInterpretDockWidget(QDockWidget):
         self.task_pages["task_enhance"] = ("🌈 假彩色画质增强", self.stack.addWidget(ImageEnhanceWidget(self)))
         self.task_pages["task_polygonize"] = ("🧩 栅格一键矢量化", self.stack.addWidget(RasterPolygonizeWidget(self)))
 
-        # 动态解析各类别对应的 Class ID
+        # 动态要素 ID 解析
         building_ids = find_class_ids_by_keywords(["建筑", "住宅", "工业", "房屋", "厂房"], fallback_id="5,6,7")
         road_ids = find_class_ids_by_keywords(["路", "道", "交通"], fallback_id="4")
         water_ids = find_class_ids_by_keywords(["水", "河", "湖"], fallback_id="8")
         veg_ids = find_class_ids_by_keywords(["林", "草", "树"], fallback_id="2,3")
         farm_ids = find_class_ids_by_keywords(["耕", "农", "田"], fallback_id="1")
 
-        # AI 大模型
+        # AI 大模型专项
         self.task_pages["task_landuse_multi"] = ("🌻 土地利用全要素解译", self.stack.addWidget(LanduseMultiTaskWidget(self)))
         self.task_pages["task_building"] = ("🏡 建筑物专项提取", self.stack.addWidget(
             SingleThemeExtractionWidget(self, building_ids, "自动识别选定区域内的城镇建筑、农村住宅与厂房轮廓。")))
-        self.task_pages["task_road"] = (
-        "🚗 道路交通专项提取", self.stack.addWidget(SingleThemeExtractionWidget(self, road_ids, "自动提取公路、街道、主干道及乡村道路等交通网络。")))
-        self.task_pages["task_water"] = (
-        "🐬 水系水体专项提取", self.stack.addWidget(SingleThemeExtractionWidget(self, water_ids, "自动识别河流、湖泊、坑塘、水库等地表水体边界。")))
-        self.task_pages["task_vegetation"] = (
-        "🍄 林草植被专项提取", self.stack.addWidget(SingleThemeExtractionWidget(self, veg_ids, "精准识别林地、灌木林与天然草地。")))
-        self.task_pages["task_farmland"] = (
-        "🥕 农田耕地专项提取", self.stack.addWidget(SingleThemeExtractionWidget(self, farm_ids, "提取农业种植用地、水浇地与旱地范围。")))
+        self.task_pages["task_road"] = ("🚗 道路交通专项提取", self.stack.addWidget(
+            SingleThemeExtractionWidget(self, road_ids, "自动提取公路、街道、主干道及乡村道路等交通网络。")))
+        self.task_pages["task_water"] = ("🐬 水系水体专项提取", self.stack.addWidget(
+            SingleThemeExtractionWidget(self, water_ids, "自动识别河流、湖泊、坑塘、水库等地表水体边界。")))
+        self.task_pages["task_vegetation"] = ("🍄 林草植被专项提取", self.stack.addWidget(
+            SingleThemeExtractionWidget(self, veg_ids, "精准识别林地、灌木林与天然草地。")))
+        self.task_pages["task_farmland"] = ("🥕 农田耕地专项提取", self.stack.addWidget(
+            SingleThemeExtractionWidget(self, farm_ids, "提取农业种植用地、水浇地与旱地范围。")))
         self.task_pages["task_sam3"] = ("🌟 SAM3 交互提示解译", self.stack.addWidget(Sam3TaskWidget(self)))
         self.task_pages["task_change"] = ("🐥 深度双期变化检测", self.stack.addWidget(ChangeDetectionTaskWidget(self)))
 
@@ -2301,19 +2267,22 @@ class ImageInterpretDockWidget(QDockWidget):
 
         self.setWidget(container)
 
-    def show_home_page(self):
+    def show_copilot_page(self):
+        """返回对话主页"""
         self.stack.setCurrentIndex(0)
-        self.title_label.setText("GeoAI 遥感智能解译终端")
+        self.title_label.setText("✨ GeoMind AI Copilot")
         self.back_btn.setVisible(False)
         self.account_btn.setVisible(True)
 
     def show_account_page(self):
+        """进入账号设置页"""
         self.stack.setCurrentIndex(1)
         self.title_label.setText("个人中心与设置")
         self.back_btn.setVisible(True)
         self.account_btn.setVisible(False)
 
-    def _navigate_to_task(self, task_key: str):
+    def navigate_to_task(self, task_key: str):
+        """从 Tools 菜单直接跳转到对应工具配置页"""
         if task_key in self.task_pages:
             title, page_idx = self.task_pages[task_key]
             self.stack.setCurrentIndex(page_idx)
@@ -2324,7 +2293,6 @@ class ImageInterpretDockWidget(QDockWidget):
     FALLBACK_SERVER_URL = "http://127.0.0.1:8000"
 
     def get_remote_or_default_url(self, force_refresh: bool = False) -> str:
-        """获取远程网关并做内存缓存，避免重复请求"""
         if force_refresh or not getattr(self, '_cached_remote_url', None):
             try:
                 if callable(globals().get("fetch_remote_server_url")):
@@ -2339,11 +2307,9 @@ class ImageInterpretDockWidget(QDockWidget):
         return cached or default_cfg or self.FALLBACK_SERVER_URL
 
     def current_server_url(self) -> str:
-        """统一通过远程或默认网关访问"""
         return self.get_remote_or_default_url()
 
     def _load_settings(self):
-        """后台预热拉取一次最新网关"""
         self.get_remote_or_default_url(force_refresh=False)
 
     def _try_restore_login(self):
@@ -2369,8 +2335,8 @@ class ImageInterpretDockWidget(QDockWidget):
         self.refresh_account_info()
 
     def logout(self):
-        self.token = "";
-        self.username = "";
+        self.token = ""
+        self.username = ""
         self.account_info = {}
         self.settings.remove(SETTINGS_KEY_TOKEN)
         self.settings.remove(SETTINGS_KEY_USERNAME)
@@ -2404,8 +2370,8 @@ class ImageInterpretDockWidget(QDockWidget):
         if self.active_running_task is not None:
             try:
                 self.active_running_task.cancel()
-            except Exception as e:
-                print(f"卸载打断任务异常: {e}")
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         self.cancel_running_task()
