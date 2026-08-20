@@ -1776,7 +1776,7 @@ class LlmCopilotWidget(QWidget):
         layout.addWidget(input_card)
 
         # ---------------- 4. 底部轻量提示 ----------------
-        self.disclaimer_label = QLabel("💡 <b>提示</b>：模型可能出错，请在运行前做好数据保存工作。")
+        self.disclaimer_label = QLabel("模型可能出错，请在运行前做好数据保存工作。")
         self.disclaimer_label.setStyleSheet("""
             QLabel {
                 background-color: #f8fafc;
@@ -1788,6 +1788,7 @@ class LlmCopilotWidget(QWidget):
             }
         """)
         self.disclaimer_label.setWordWrap(True)
+        self.disclaimer_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.disclaimer_label)
 
     def _build_tools_menu(self):
