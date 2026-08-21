@@ -1606,58 +1606,44 @@ def _get_target_bbox(place_name: str) -> List[float]:
     return bbox or [115.7, 39.4, 117.4, 41.0]
 
 
-# ===========================================================================
-# 8. 实时联网搜索与网页内容解析引擎
-# ===========================================================================
+import re
+import urllib.parse
+from html import unescape
+import requests
+
 
 def skill_web_search(query: str, max_results: int = 5) -> str:
     """
-    通用实时联网搜索工具。
-    可用于查询最新灾情资讯、台风气象动态、EPSG 坐标系参数、GIS 算法文档或地名背景信息。
-
-    :param query: 搜索关键词（如 "台风杜苏芮 登陆地点 降水量"、"EPSG 4547 适用范围"）
-    :param max_results: 返回前 N 条搜索结果，默认 5 条
+    通用实时联网搜索工具（国内直连免Key免费版：Bing中国 + 百度双通道）。
+    可用于查询最新灾情资讯、气象动态、EPSG坐标系、历史地理路线与行业规范。
     """
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     }
 
-    # -----------------------------------------------------------------------
-    # 通道 1：DuckDuckGo 实时搜索（免 API Key、零额外配置）
-    # -----------------------------------------------------------------------
+    results = []
+
+    # =======================================================================
+    # 通道 1：Bing 中国 (cn.bing.com) - 国内直连，排版结构最干净
+    # =======================================================================
     try:
-        url = "https://html.duckduckgo.com/html/"
-        data = {"q": query, "b": ""}
-        resp = requests.post(url, data=data, headers=headers, timeout=10)
+        encoded_query = urllib.parse.quote(query)
+        bing_url = f"https://cn.bing.com/search?q={encoded_query}&ensearch=0"
 
+        resp = requests.get(bing_url, headers=headers, timeout=8)
         if resp.status_code == 200:
-            import re
-            from html import unescape
-
-            # 正则解析 DDG HTML 搜索结果
-            results = []
             raw_html = resp.text
-
-            # 匹配结果卡片
-            snippet_pattern = re.findall(
-                r'<a class="result__snippet[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-                raw_html,
-                re.DOTALL
-            )
-            title_pattern = re.findall(
-                r'<a class="result__url[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-                raw_html,
-                re.DOTALL
-            )
-
-            # 另一种更通用的结果块匹配
-            blocks = re.findall(r'<div class="result__body">(.*?)</div>\s*</div>', raw_html, re.DOTALL)
+            # 匹配 Bing 的搜索结果块 <li class="b_algo">
+            blocks = re.findall(r'<li class="b_algo"(.*?)</li>', raw_html, re.DOTALL)
 
             for b in blocks[:max_results]:
-                # 提取标题
-                t_m = re.search(r'<a class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', b, re.DOTALL)
-                # 提取摘要
-                s_m = re.search(r'<a class="result__snippet[^>]*>(.*?)</a>', b, re.DOTALL)
+                # 提取标题和链接
+                t_m = re.search(r'<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)</a></h2>', b, re.DOTALL)
+                # 提取描述摘要
+                s_m = re.search(r'<div class="b_caption"><p[^>]*>(.*?)</p>', b, re.DOTALL) or re.search(
+                    r'<p[^>]*>(.*?)</p>', b, re.DOTALL)
 
                 if t_m:
                     link = t_m.group(1)
@@ -1667,41 +1653,47 @@ def skill_web_search(query: str, max_results: int = 5) -> str:
                     title = unescape(title)
                     snippet = unescape(snippet)
 
-                    # 过滤 DuckDuckGo 内部重定向链接
-                    if "uddg=" in link:
-                        actual_url = link.split("uddg=")[-1].split("&")[0]
-                        import urllib.parse
-                        link = urllib.parse.unquote(actual_url)
-
-                    results.append(f"📌 **[{title}]({link})**\n   {snippet}")
+                    if title and link.startswith("http"):
+                        results.append(f"📌 **[{title}]({link})**\n   {snippet}")
 
             if results:
-                return f"🔍 **联网搜索结果 (`{query}`)**：\n\n" + "\n\n".join(results)
+                return f"🔍 **Bing 搜索结果 (`{query}`)**：\n\n" + "\n\n".join(results)
     except Exception as e:
-        logger.warning(f"DuckDuckGo search fallback: {e}")
+        logger.warning(f"Bing search failed, falling back to Baidu: {e}")
 
-    # -----------------------------------------------------------------------
-    # 通道 2：SearXNG 公共聚合搜索保底
-    # -----------------------------------------------------------------------
+    # =======================================================================
+    # 通道 2：百度搜索 (www.baidu.com) 兜底
+    # =======================================================================
     try:
-        searx_url = "https://searx.be/search"
-        params = {"q": query, "format": "json"}
-        resp = requests.get(searx_url, params=params, headers=headers, timeout=10)
+        baidu_url = f"https://www.baidu.com/s?wd={urllib.parse.quote(query)}"
+        resp = requests.get(baidu_url, headers=headers, timeout=8)
         if resp.status_code == 200:
-            js = resp.json()
-            items = js.get("results", [])[:max_results]
-            if items:
-                lines = [f"🔍 **联网搜索结果 (`{query}`)**：\n"]
-                for it in items:
-                    title = it.get("title", "")
-                    url = it.get("url", "")
-                    content = it.get("content", "")
-                    lines.append(f"📌 **[{title}]({url})**\n   {content}")
-                return "\n\n".join(lines)
-    except Exception as e_searx:
-        logger.warning(f"Searx search fallback: {e_searx}")
+            raw_html = resp.text
+            # 匹配百度结果容器
+            blocks = re.findall(r'<div class="[a-z0-9-_]*\s*c-container[^"]*"(.*?)</div>\s*</div>', raw_html, re.DOTALL)
 
-    return f"❌ 联网搜索失败：未能连接到搜索服务或当前网络受限，请稍后重试。"
+            for b in blocks[:max_results]:
+                t_m = re.search(r'<h3[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)</a></h3>', b, re.DOTALL)
+                s_m = re.search(r'<span class="content-right_[^"]*"[^>]*>(.*?)</span>', b, re.DOTALL) or re.search(
+                    r'<div class="c-abstract"[^>]*>(.*?)</div>', b, re.DOTALL)
+
+                if t_m:
+                    link = t_m.group(1)
+                    title = re.sub(r'<[^>]+>', '', t_m.group(2)).strip()
+                    snippet = re.sub(r'<[^>]+>', '', s_m.group(1)).strip() if s_m else "无摘要"
+
+                    title = unescape(title)
+                    snippet = unescape(snippet)
+
+                    if title:
+                        results.append(f"📌 **[{title}]({link})**\n   {snippet}")
+
+            if results:
+                return f"🔍 **百度搜索结果 (`{query}`)**：\n\n" + "\n\n".join(results)
+    except Exception as e_baidu:
+        logger.warning(f"Baidu search fallback failed: {e_baidu}")
+
+    return f"❌ 联网搜索失败：当前网络未能连接到 Bing/百度搜索服务，请稍后重试。"
 
 
 def skill_fetch_webpage_content(url: str, max_chars: int = 2500) -> str:
