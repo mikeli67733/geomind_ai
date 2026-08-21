@@ -64,6 +64,8 @@ SKILL_HUMAN_LABELS = {
     "skill_fetch_nighttime_lights": "加载 VIIRS 全球夜间灯光影像",
     "skill_fetch_hydrology_data": "加载 HydroSHEDS 全球水文河网",
     "skill_fetch_era5_climate": "查询 ECMWF ERA5 气象气候数据",
+    "skill_web_search": "联网检索实时资讯与专业文档",
+    "skill_fetch_webpage_content": "抓取并解析网页正文内容",
 }
 
 
