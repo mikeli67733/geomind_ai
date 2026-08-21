@@ -10,6 +10,7 @@ Features:
 - Round-scoped buffer separation for multi-step tool call round-trips
 - Dynamic pulsing & simulated progress bar for asynchronous background tasks
 - On-demand extent guard triggered ONLY when interpretation tasks are executed
+- Anti-Loop Deadlock Guard for asynchronous tool calls
 - Robust streaming HTML rendering without syntax breakage
 """
 import html
@@ -35,26 +36,28 @@ from .theme import (
 
 # 内部技能函数名到人类友好提示文案的映射表
 SKILL_HUMAN_LABELS = {
-    "get_active_layers": "读取当前图层列表",
-    "skill_calc_spectral_index": "计算遥感光谱指数",
+    "get_active_layers": "读取当前图层列表与物理画像",
+    "skill_calc_spectral_index": "计算遥感物理光谱指数",
+    "skill_raster_threshold": "栅格指数阈值二值化提取",
     "skill_run_pca": "执行主成分分析 (PCA)",
     "skill_dem_analysis": "分析 DEM 地形要素",
     "skill_spatial_filter": "执行空间滤波与边缘提取",
-    "skill_area_statistics": "统计地物分类面积",
+    "skill_area_statistics": "统计地物分类与图斑面积",
     "skill_vector_smooth": "平滑与化简矢量图斑",
     "skill_kmeans_cluster": "执行 K-Means 聚类分析",
     "skill_raster_diff": "双期像元差分变化检测",
     "skill_image_enhance": "影像画质增强与真/假彩色合成",
     "skill_raster_polygonize": "栅格结果矢量化与面要素提取",
     "skill_geocode_address": "地名地址解析与地图定位",
-    "skill_ai_extract_feature": "启动云端要素解译大模型",
+    "skill_ai_extract_feature": "启动云端标准地物解译模型",
     "skill_ai_sam3_extract": "启动云端 SAM3 交互提示解译",
     "skill_ai_change_detection": "启动云端深度时相变化检测模型",
     "qgis_search_tools": "检索 QGIS 空间算法工具箱",
     "qgis_get_tool_params": "读取 QGIS 算法参数配置",
     "qgis_run_algorithm": "执行 QGIS 本地空间分析算法",
-    "skill_fetch_sentinel2_imagery":"检索并流式加载 Sentinel-2 遥感影像",
-    "execute_pyqgis_code":"执行动态 PyQGIS 空间分析代码"
+    "skill_fetch_sentinel2_imagery": "检索并流式加载 Sentinel-2 影像",
+    "skill_fetch_dem_data": "检索并加载 30m 全球 Copernicus DEM",
+    "execute_pyqgis_code": "执行动态 PyQGIS 空间分析代码"
 }
 
 
@@ -115,6 +118,7 @@ class LlmCopilotWidget(QWidget):
         self._active_ai_task = None
         self._current_assistant_item = None
         self._current_progress_item_id = None
+        self._consecutive_tool_calls: list = []  # 防死循环调用计数器
 
         # 进度条呼吸律动与动态步进定时器
         self._progress_timer = QTimer(self)
@@ -407,6 +411,7 @@ class LlmCopilotWidget(QWidget):
         self.display_items = []
         self._current_progress_item_id = None
         self._progress_timer.stop()
+        self._consecutive_tool_calls = []
         self._render_chat_ui()
 
     def _clear_and_new_session(self):
@@ -421,6 +426,7 @@ class LlmCopilotWidget(QWidget):
             self._stop_current_task()
         self._progress_timer.stop()
         self.chat_history = []
+        self._consecutive_tool_calls = []
         self._current_assistant_item = None
         self._current_progress_item_id = None
         self._reset_welcome_message()
@@ -429,6 +435,7 @@ class LlmCopilotWidget(QWidget):
     def _stop_current_task(self):
         stopped = False
         self._progress_timer.stop()
+        self._consecutive_tool_calls = []
         if self._llm_task is not None:
             try:
                 self._llm_task.cancel()
@@ -447,7 +454,7 @@ class LlmCopilotWidget(QWidget):
             if self._current_progress_item_id:
                 self.display_items = [item for item in self.display_items if item.get("id") != self._current_progress_item_id]
                 self._current_progress_item_id = None
-            self.display_items.append({"id": f"stop_{time.time()}", "role": "system_error", "content": "⏹ 任务已被用户打断"})
+            self.display_items.append({"id": f"stop_{time.time()}", "role": "system_error", "content": "⏹ 任务已被用户手动打断"})
             self._render_chat_ui()
             self._reset_btn()
 
@@ -474,8 +481,8 @@ class LlmCopilotWidget(QWidget):
             self.dock.show_account_page()
             return
 
-        # 日常普通对话不作范围拦截，直接发送
         self.input_edit.clear()
+        self._consecutive_tool_calls = []  # 重置单轮调用跟踪
 
         user_msg_id = f"user_{time.time()}"
         self.display_items.append({"id": user_msg_id, "role": "user", "content": text})
@@ -565,6 +572,8 @@ class LlmCopilotWidget(QWidget):
             for tc in tool_calls:
                 fn_name = tc["function"]["name"]
                 args_raw = tc["function"]["arguments"]
+                self._consecutive_tool_calls.append(fn_name)
+
                 label = SKILL_HUMAN_LABELS.get(
                     fn_name,
                     f"执行空间算法: {fn_name.replace('skill_', '').replace('_', ' ').title()}"
@@ -593,7 +602,7 @@ class LlmCopilotWidget(QWidget):
                 })
                 self._render_chat_ui()
 
-            # 递归请求大模型输出后续分析
+            # 递归请求大模型输出最终总结答复
             self._request_backend_copilot()
 
     def _on_copilot_finished(self):
@@ -620,17 +629,17 @@ class LlmCopilotWidget(QWidget):
         self._render_chat_ui()
         self._reset_btn()
 
-    # -- 技能分发调度 --------------------------------------------------------
+    # -- 技能分发调度与防死锁拦截 ---------------------------------------------
 
     def _execute_local_skill(self, fn_name: str, args: dict) -> str:
         from ..tools.skill_dispatcher import (
-            get_active_layers, skill_calc_spectral_index, skill_run_pca,
-            skill_dem_analysis, skill_spatial_filter, skill_area_statistics,
+            get_active_layers, skill_calc_spectral_index, skill_raster_threshold,
+            skill_run_pca, skill_dem_analysis, skill_spatial_filter, skill_area_statistics,
             skill_vector_smooth, skill_kmeans_cluster, skill_raster_diff,
             skill_image_enhance, skill_raster_polygonize,
             skill_ai_extract_feature, skill_ai_sam3_extract, skill_ai_change_detection,
-            skill_geocode_address, qgis_search_tools, qgis_get_tool_params, qgis_run_algorithm,skill_fetch_sentinel2_imagery, 
-            execute_pyqgis_code,
+            skill_geocode_address, qgis_search_tools, qgis_get_tool_params, qgis_run_algorithm,
+            skill_fetch_sentinel2_imagery, skill_fetch_dem_data, execute_pyqgis_code,
         )
         from ..utils.extent_guard import check_extent_too_large
 
@@ -638,9 +647,21 @@ class LlmCopilotWidget(QWidget):
         token = self.dock.token
         machine_id = self.dock.machine_id
 
+        # 核心防刷死锁拦截：单轮对话中如果 get_active_layers 出现 2 次以上直接拦截
+        if fn_name == "get_active_layers":
+            layer_calls = [name for name in self._consecutive_tool_calls if name == "get_active_layers"]
+            if len(layer_calls) >= 2:
+                return (
+                    "【系统防死锁拦截】检测到图层状态在本轮中未发生变化。\n"
+                    "后台异步解译任务正在 GPU 上运算，图层尚未生成。\n"
+                    "请你立即结束本次对话，直接向用户说明'解译任务已在后台执行，请稍候'，"
+                    "严禁在此轮中继续调用 get_active_layers 查询！"
+                )
+
         local_tools = {
             "get_active_layers": get_active_layers,
             "skill_calc_spectral_index": skill_calc_spectral_index,
+            "skill_raster_threshold": skill_raster_threshold,
             "skill_run_pca": skill_run_pca,
             "skill_dem_analysis": skill_dem_analysis,
             "skill_spatial_filter": skill_spatial_filter,
@@ -655,19 +676,19 @@ class LlmCopilotWidget(QWidget):
             "qgis_get_tool_params": qgis_get_tool_params,
             "qgis_run_algorithm": qgis_run_algorithm,
             "skill_fetch_sentinel2_imagery": skill_fetch_sentinel2_imagery,
-            "execute_pyqgis_code": execute_pyqgis_code, 
+            "skill_fetch_dem_data": skill_fetch_dem_data,
+            "execute_pyqgis_code": execute_pyqgis_code,
         }
 
         if fn_name in local_tools:
-            return local_tools[fn_name](**args)
+            return str(local_tools[fn_name](**args))
 
-        # 核心：仅在调用云端深度解译大模型时进行范围过大判定与拦截
+        # 核心：云端深度解译大模型异步任务提交
         if fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
             canvas = self.dock.canvas
             extent = canvas.extent()
             extent_crs = canvas.mapSettings().destinationCrs()
 
-            # 提前基于目标图层进行范围超限校验
             target_layer_name = args.get("layer_name") or args.get("layer_t1")
             target_layer = None
             if target_layer_name:
@@ -747,7 +768,12 @@ class LlmCopilotWidget(QWidget):
             task.taskCancelled.connect(self._on_ai_task_cancelled)
 
             QgsApplication.taskManager().addTask(task)
-            return "已成功向云端 GPU 集群投递解译任务，正在后台处理中..."
+            return (
+                "【后台任务已启动】已成功向云端 GPU 集群投递解译任务，正在后台异步处理。\n"
+                "⚠️ 重要提示：由于解译任务在后台异步运行需要数秒时间，"
+                "请大模型立即结束本轮回合并向用户汇报'任务已提交后台，请稍候'，"
+                "严禁在此轮中继续调用任何工具或轮询查询图层！"
+            )
 
         return f"未找到可执行工具: {fn_name}"
 
@@ -767,7 +793,7 @@ class LlmCopilotWidget(QWidget):
                 item["icon"] = current_icon
                 curr_p = item.get("progress", 0.0)
 
-                # 模拟平滑增长（避免卡在0%）
+                # 模拟平滑增长（避免卡在 0%）
                 if curr_p < 30.0:
                     curr_p += 2.5
                     item["status_text"] = f"影像切片与云端投递中{dots}"
@@ -820,7 +846,12 @@ class LlmCopilotWidget(QWidget):
             self.display_items.append({
                 "id": f"ai_ok_{time.time()}",
                 "role": "assistant",
-                "content": f"🎉 **云端解译完成！** 已自动为您加载图层：`{layer_name}`"
+                "content": f"🎉 **云端解译完成！** 已自动为您加载图层：`{layer_name}`\n您可以继续下达后续指令（例如：'统计该图层面积' 或 '平滑图斑'）。"
+            })
+            # 同时将结果同步进上下文，方便后续直接对话
+            self.chat_history.append({
+                "role": "system",
+                "content": f"系统通知：后台解译任务已完成，生成的图层已加载到工程中，图层名称为: '{layer_name}'。"
             })
         else:
             self.display_items.append({"id": f"ai_fail_{time.time()}", "role": "system_error", "content": "解译结果图层加载失败"})
@@ -853,4 +884,5 @@ class LlmCopilotWidget(QWidget):
         self.send_btn.setText("🚀 发送")
         self.stop_btn.setEnabled(False)
         self._llm_task = None
+        self._consecutive_tool_calls = []
         self._scroll_to_bottom()
