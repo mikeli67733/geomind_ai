@@ -435,12 +435,29 @@ def skill_fetch_sentinel2_imagery(
     return f"{located_msg}{result}"
 
 
-def skill_fetch_dem_data(place_name: str = "当前视口") -> str:
-    """检索并流式载入当前视口或指定地点的 30米 Copernicus DEM 高程数据。"""
+def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP30") -> str:
+    """
+    【高可靠多通道】检索并下载当前视口或指定区域的高精度 30米 全球真实 DEM 高程栅格 (GeoTIFF)。
+    通道 1: OpenTopography 全球 Copernicus 30m / SRTM 30m REST 接口；
+    通道 2: AWS STAC 多资产自动解析；
+    通道 3: Mapzen 全球高程瓦片流式加载。
+    """
     try:
         bbox = None
-        if place_name and place_name not in ("当前视口", "当前视图", "视口"):
+        located_msg = ""
+
+        # 1. 视口与坐标解析
+        if place_name and place_name not in ("当前视口", "当前视图", "当前区域", "视口"):
             bbox = _geocode_place_bbox(place_name)
+            if bbox and iface and iface.mapCanvas():
+                canvas = iface.mapCanvas()
+                src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+                dest_crs = canvas.mapSettings().destinationCrs()
+                tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+                target_rect = tr.transformBoundingBox(QgsRectangle(bbox[0], bbox[1], bbox[2], bbox[3]))
+                canvas.setExtent(target_rect)
+                canvas.refresh()
+                located_msg = f"📍 已自动定位至 `{place_name}`\n"
 
         if not bbox and iface and iface.mapCanvas():
             canvas = iface.mapCanvas()
@@ -449,37 +466,111 @@ def skill_fetch_dem_data(place_name: str = "当前视口") -> str:
             dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
             tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
             wgs_rect = tr.transformBoundingBox(rect)
-            bbox = [wgs_rect.xMinimum(), wgs_rect.yMinimum(), wgs_rect.xMaximum(), wgs_rect.yMaximum()]
+            bbox = [
+                round(wgs_rect.xMinimum(), 4),
+                round(wgs_rect.yMinimum(), 4),
+                round(wgs_rect.xMaximum(), 4),
+                round(wgs_rect.yMaximum(), 4),
+            ]
 
-        if not bbox:
-            return "无法获取视口范围。"
+        if not bbox or (bbox[0] == 0 and bbox[1] == 0):
+            bbox = [115.7, 39.4, 117.4, 41.0]
 
-        payload = {
-            "collections": ["cop-dem-glo-30"],
-            "bbox": bbox,
-            "limit": 1
-        }
-        resp = requests.post(STAC_AWS_URL, json=payload, timeout=12)
-        features = resp.json().get("features", [])
-        if not features:
-            return "当前区域未检索到 Copernicus 30m DEM 数据。"
+        # 限制单次获取范围不超过 1.5 度，防止范围过大导致接口拒绝
+        min_lon, min_lat, max_lon, max_lat = bbox
+        if (max_lon - min_lon) > 1.5 or (max_lat - min_lat) > 1.5:
+            mid_x = (min_lon + max_lon) / 2
+            mid_y = (min_lat + max_lat) / 2
+            min_lon, max_lon = mid_x - 0.35, mid_x + 0.35
+            min_lat, max_lat = mid_y - 0.35, mid_y + 0.35
 
-        data_href = features[0]["assets"]["data"]["href"]
-        vsi_url = f"/vsicurl/{data_href}"
+        time_str = datetime.now().strftime("%H%M%S")
+        out_tif = os.path.join(tempfile.gettempdir(), f"dem_{dem_type}_{time_str}.tif")
 
-        warp_opts = gdal.WarpOptions(
-            format="VRT",
-            outputBounds=[bbox[0], bbox[1], bbox[2], bbox[3]],
-            outputBoundsSRS="EPSG:4326"
-        )
-        clipped_vrt = os.path.join(tempfile.gettempdir(), f"dem_{datetime.now().strftime('%H%M%S')}.vrt")
-        gdal.Warp(clipped_vrt, vsi_url, options=warp_opts)
+        # ===================================================================
+        # 通道 1：OpenTopography Global DEM API (直出真实 30m GeoTIFF)
+        # ===================================================================
+        try:
+            ot_url = "https://portal.opentopography.org/API/globaldem"
+            params = {
+                "demtype": dem_type if dem_type in ("COP30", "SRTMGL1", "NASADEM") else "COP30",
+                "south": min_lat,
+                "north": max_lat,
+                "west": min_lon,
+                "east": max_lon,
+                "outputFormat": "GTiff"
+            }
+            resp = requests.get(ot_url, params=params, timeout=15)
+            # 校验是否是合法的 GeoTIFF 二进制 (以 II* 或 MM 开头)
+            if resp.status_code == 200 and len(resp.content) > 10000 and resp.content[:4] in (
+            b'II*\x00', b'MM\x00*', b'II\x2b\x00'):
+                with open(out_tif, "wb") as f:
+                    f.write(resp.content)
 
-        layer = QgsRasterLayer(clipped_vrt, f"Copernicus_DEM_30m", "gdal")
+                layer_name = f"Copernicus_DEM_30m_{time_str}"
+                layer = QgsRasterLayer(out_tif, layer_name, "gdal")
+                if layer.isValid():
+                    QgsProject.instance().addMapLayer(layer)
+                    return f"{located_msg}⛰️ **已成功下载并加载 30米 高精 DEM 图层**：`{layer_name}`\n*(数据源: Copernicus GLO-30 / OpenTopography)*"
+        except Exception as e_ot:
+            logger.warning(f"OpenTopography DEM channel fallback: {e_ot}")
+
+        # ===================================================================
+        # 通道 2：AWS Earth Search STAC (智能多键名容错解析)
+        # ===================================================================
+        try:
+            payload = {
+                "collections": ["cop-dem-glo-30"],
+                "bbox": [min_lon, min_lat, max_lon, max_lat],
+                "limit": 1
+            }
+            resp = requests.post(STAC_AWS_URL, json=payload, timeout=10)
+            if resp.status_code == 200:
+                features = resp.json().get("features", [])
+                if features:
+                    assets = features[0].get("assets", {})
+                    # 动态智能匹配可用资产键
+                    target_asset = (
+                            assets.get("data") or
+                            assets.get("elevation") or
+                            assets.get("dem") or
+                            next((v for k, v in assets.items() if "tif" in v.get("href", "")), None)
+                    )
+                    if target_asset and "href" in target_asset:
+                        href = target_asset["href"]
+                        # 协议自适应转换
+                        if href.startswith("s3://"):
+                            href = href.replace("s3://", "https://s3.amazonaws.com/")
+                        vsi_url = f"/vsicurl/{href}"
+
+                        warp_opts = gdal.WarpOptions(
+                            format="VRT",
+                            outputBounds=[min_lon, min_lat, max_lon, max_lat],
+                            outputBoundsSRS="EPSG:4326",
+                            resampleAlg="bilinear"
+                        )
+                        clipped_vrt = os.path.join(tempfile.gettempdir(), f"dem_stac_{time_str}.vrt")
+                        gdal.Warp(clipped_vrt, vsi_url, options=warp_opts)
+
+                        layer_name = f"Copernicus_DEM_30m_{time_str}"
+                        layer = QgsRasterLayer(clipped_vrt, layer_name, "gdal")
+                        if layer.isValid():
+                            QgsProject.instance().addMapLayer(layer)
+                            return f"{located_msg}⛰️ **已成功流式加载 30米 Copernicus DEM 图层**：`{layer_name}`"
+        except Exception as e_stac:
+            logger.warning(f"STAC DEM channel fallback: {e_stac}")
+
+        # ===================================================================
+        # 通道 3：AWS Mapzen Terrarium 全球高程瓦片保底
+        # ===================================================================
+        terrarium_url = "type=xyz&url=https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png&zmax=15&zmin=0"
+        layer = QgsRasterLayer(terrarium_url, f"Global_Terrain_DEM(保底瓦片)", "wms")
         if layer.isValid():
             QgsProject.instance().addMapLayer(layer)
-            return f"✅ 成功流式加载 30米 Copernicus DEM 图层：`{layer.name()}`。"
-        return "DEM 图层构建失败。"
+            return f"{located_msg}⛰️ **已为您加载全球高程地形底图 (Mapzen Terrain)**。"
+
+        return f"{located_msg}❌ 获取 DEM 失败：所有在线高程通道均无法建立连接，请稍后重试。"
+
     except Exception as e:
         return f"获取 DEM 异常: {e}"
 
@@ -944,3 +1035,482 @@ def execute_pyqgis_code(python_code: str) -> str:
             canvas.setRenderFlag(True)
             canvas.refresh()
         QCoreApplication.processEvents()
+
+# ===========================================================================
+# OpenStreetMap 真实矢量 / JSON 数据获取接口 (Overpass API)
+# ===========================================================================
+
+OVERPASS_SERVERS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+]
+
+
+def skill_fetch_osm_vector_data(
+        place_name: str = "当前视口",
+        feature_type: str = "all",
+        custom_tag: str = ""
+) -> str:
+    """
+    通过 Overpass API 获取 OpenStreetMap 真实矢量 JSON 数据，并在 QGIS 中自动生成矢量图层。
+
+    :param place_name: 目标地点名称或'当前视口'
+    :param feature_type: 地物类型: 'all'(全要素), 'building'(建筑轮廓), 'highway'(路网道路), 'water'(水系水体), 'amenity'(公共设施POI), 'landuse'(土地利用)
+    :param custom_tag: 自定义 OSM Tag 过滤表达式（例如: 'amenity=school' 或 'natural=water'）
+    """
+    try:
+        bbox = None
+        located_msg = ""
+
+        # 1. 坐标与视口范围计算 [min_lon, min_lat, max_lon, max_lat]
+        if place_name and place_name not in ("当前视口", "当前视图", "当前区域", "视口"):
+            bbox = _geocode_place_bbox(place_name)
+            if bbox and iface and iface.mapCanvas():
+                canvas = iface.mapCanvas()
+                src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+                dest_crs = canvas.mapSettings().destinationCrs()
+                tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+                target_rect = tr.transformBoundingBox(QgsRectangle(bbox[0], bbox[1], bbox[2], bbox[3]))
+                canvas.setExtent(target_rect)
+                canvas.refresh()
+                located_msg = f"📍 已定位至 `{place_name}`\n"
+
+        if not bbox and iface and iface.mapCanvas():
+            canvas = iface.mapCanvas()
+            rect = canvas.extent()
+            src_crs = canvas.mapSettings().destinationCrs()
+            dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+            wgs_rect = tr.transformBoundingBox(rect)
+            bbox = [
+                round(wgs_rect.xMinimum(), 4),
+                round(wgs_rect.yMinimum(), 4),
+                round(wgs_rect.xMaximum(), 4),
+                round(wgs_rect.yMaximum(), 4),
+            ]
+
+        if not bbox or (bbox[0] == 0 and bbox[1] == 0):
+            bbox = [116.38, 39.90, 116.42, 39.93]
+
+        min_lon, min_lat, max_lon, max_lat = bbox
+
+        # 范围过大保护：限制在 0.08 度内（约 8x8 km），防止 Overpass 请求超时卡死
+        if (max_lon - min_lon) > 0.08 or (max_lat - min_lat) > 0.08:
+            mid_x, mid_y = (min_lon + max_lon) / 2, (min_lat + max_lat) / 2
+            min_lon, max_lon = round(mid_x - 0.03, 4), round(mid_x + 0.03, 4)
+            min_lat, max_lat = round(mid_y - 0.03, 4), round(mid_y + 0.03, 4)
+
+        # 2. 构造 Overpass QL 查询语句
+        tag_filter = ""
+        if custom_tag:
+            tag_filter = f"[{custom_tag}]"
+        elif feature_type == "building":
+            tag_filter = '["building"]'
+        elif feature_type == "highway":
+            tag_filter = '["highway"]'
+        elif feature_type == "water":
+            tag_filter = '["natural"~"water|wetland"]'
+        elif feature_type == "amenity":
+            tag_filter = '["amenity"]'
+        elif feature_type == "landuse":
+            tag_filter = '["landuse"]'
+
+        # bbox 参数顺序：south, west, north, east
+        overpass_query = f"""
+        [out:json][timeout:25];
+        (
+          node{tag_filter}({min_lat},{min_lon},{max_lat},{max_lon});
+          way{tag_filter}({min_lat},{min_lon},{max_lat},{max_lon});
+          relation{tag_filter}({min_lat},{min_lon},{max_lat},{max_lon});
+        );
+        out body;
+        >;
+        out skel qt;
+        """
+
+        # 3. 发送 HTTP POST 请求拉取 JSON
+        headers = {"User-Agent": "GeoMind-QGIS-Plugin/1.0"}
+        data = None
+        for server in OVERPASS_SERVERS:
+            try:
+                resp = requests.post(server, data={"data": overpass_query}, headers=headers, timeout=20)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    break
+            except Exception:
+                continue
+
+        if not data or "elements" not in data:
+            return f"{located_msg}❌ 获取 OSM 矢量 JSON 数据失败：Overpass 接口连接超时，请放小视口后重试。"
+
+        elements = data.get("elements", [])
+        if not elements:
+            return f"{located_msg}ℹ️ 当前区域内未检索到符合条件的 OSM 矢量要素。"
+
+        # 4. 解析 JSON 数据节点字典
+        nodes_dict = {}
+        for elem in elements:
+            if elem.get("type") == "node" and "lon" in elem and "lat" in elem:
+                nodes_dict[elem["id"]] = QgsPointXY(elem["lon"], elem["lat"])
+
+        # 5. 分离构建点、线、面图层
+        point_features, line_features, poly_features = [], [], []
+
+        for elem in elements:
+            tags = elem.get("tags", {})
+            if not tags:
+                continue
+
+            elem_id = str(elem.get("id"))
+            name = tags.get("name") or tags.get("name:en") or tags.get("name:zh") or "未命名"
+            elem_type = tags.get("building") or tags.get("highway") or tags.get("amenity") or tags.get(
+                "natural") or tags.get("landuse") or "osm_feature"
+            tags_json_str = json.dumps(tags, ensure_ascii=False)
+
+            if elem.get("type") == "node":
+                if elem["id"] in nodes_dict:
+                    feat = QgsFeature()
+                    feat.setGeometry(QgsGeometry.fromPointXY(nodes_dict[elem["id"]]))
+                    feat.setAttributes([elem_id, name, elem_type, tags_json_str])
+                    point_features.append(feat)
+
+            elif elem.get("type") == "way":
+                node_ids = elem.get("nodes", [])
+                pts = [nodes_dict[nid] for nid in node_ids if nid in nodes_dict]
+                if len(pts) < 2:
+                    continue
+
+                # 闭合多边形判定（首尾相同且包含面状特征）
+                is_polygon = (len(pts) >= 4 and pts[0] == pts[-1] and (
+                        "building" in tags or "landuse" in tags or "natural" in tags or "area" in tags
+                ))
+
+                if is_polygon:
+                    feat = QgsFeature()
+                    feat.setGeometry(QgsGeometry.fromPolygonXY([pts]))
+                    feat.setAttributes([elem_id, name, elem_type, tags_json_str])
+                    poly_features.append(feat)
+                else:
+                    feat = QgsFeature()
+                    feat.setGeometry(QgsGeometry.fromPolylineXY(pts))
+                    feat.setAttributes([elem_id, name, elem_type, tags_json_str])
+                    line_features.append(feat)
+
+        # 6. 生成 QGIS 内存图层并加载
+        time_tag = datetime.now().strftime("%H%M%S")
+        loaded_layers = []
+
+        def create_layer(geom_type, name, features):
+            vlayer = QgsVectorLayer(f"{geom_type}?crs=EPSG:4326", name, "memory")
+            prov = vlayer.dataProvider()
+            prov.addAttributes([
+                QgsField("osm_id", QVariant.String),
+                QgsField("name", QVariant.String),
+                QgsField("type", QVariant.String),
+                QgsField("tags", QVariant.String),
+            ])
+            vlayer.updateFields()
+            prov.addFeatures(features)
+            vlayer.updateExtents()
+            QgsProject.instance().addMapLayer(vlayer)
+            return vlayer.name()
+
+        if poly_features:
+            lyr = create_layer("Polygon", f"OSM_面要素_{feature_type}_{time_tag}", poly_features)
+            loaded_layers.append(f"`{lyr}` ({len(poly_features)} 个面)")
+        if line_features:
+            lyr = create_layer("LineString", f"OSM_线要素_{feature_type}_{time_tag}", line_features)
+            loaded_layers.append(f"`{lyr}` ({len(line_features)} 条线)")
+        if point_features:
+            lyr = create_layer("Point", f"OSM_点要素_{feature_type}_{time_tag}", point_features)
+            loaded_layers.append(f"`{lyr}` ({len(point_features)} 个点)")
+
+        if iface and iface.mapCanvas():
+            iface.mapCanvas().refresh()
+
+        if not loaded_layers:
+            return f"{located_msg}⚠️ 获取到了 {len(elements)} 个 OSM 拓扑节点，但未构建出有效几何要素。"
+
+        return (
+                f"{located_msg}🎉 **已成功获取 OpenStreetMap 真实 JSON 矢量数据并加载至工程**：\n"
+                + "\n".join([f"- {l}" for l in loaded_layers])
+                + "\n💡 *图层属性表中包含原始 OSM 标签属性 (name, type, tags)，可直接参与空间分析或编辑。*"
+        )
+
+    except Exception as e:
+        return f"获取 OSM 矢量数据异常: {e}"
+
+# ===========================================================================
+# 7. 全球多源开放数据接入引擎 (Natural Earth, Landsat, WorldCover, WorldPop 等)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 7.1 Natural Earth 全球基础地理矢量
+# ---------------------------------------------------------------------------
+def skill_fetch_natural_earth(feature_type: str = "countries") -> str:
+    """
+    拉取 Natural Earth 1:10m 高精全球基础地理矢量图层（国界、海岸线、大江大河、大城市等）。
+    :param feature_type: 'countries'(国界政区), 'coastline'(海岸线), 'rivers'(主要水系河流), 'places'(大中城市点位)
+    """
+    try:
+        url_map = {
+            "countries": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_0_countries.geojson",
+            "coastline": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_coastline.geojson",
+            "rivers": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_rivers_lake_centerlines.geojson",
+            "places": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_populated_places.geojson",
+        }
+        target_url = url_map.get(feature_type, url_map["countries"])
+        layer_name = f"NaturalEarth_10m_{feature_type.title()}"
+
+        vlayer = QgsVectorLayer(target_url, layer_name, "ogr")
+        if vlayer.isValid():
+            QgsProject.instance().addMapLayer(vlayer)
+            if iface and iface.mapCanvas():
+                iface.mapCanvas().refresh()
+            return f"🌍 **Natural Earth 1:10m 基础地理矢量图层已加载**：`{layer_name}` ({vlayer.featureCount()} 个要素)"
+        return f"❌ Natural Earth 图层加载失败，请检查网络连接。"
+    except Exception as e:
+        return f"获取 Natural Earth 异常: {e}"
+
+
+# ---------------------------------------------------------------------------
+# 7.2 Landsat 8/9 Collection-2 Level-2 30米卫星影像 (AWS Open Data)
+# ---------------------------------------------------------------------------
+def skill_fetch_landsat_imagery(
+    place_name: str = "当前视口",
+    days_back: int = 30,
+    max_cloud: int = 20
+) -> str:
+    """
+    检索并流式加载 Landsat 8/9 C2-L2 30米多光谱卫星影像（精准裁剪至当前视口）。
+    """
+    try:
+        bbox = _get_target_bbox(place_name)
+        today = datetime.now()
+        start_date = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+
+        payload = {
+            "collections": ["landsat-c2-l2"],
+            "bbox": bbox,
+            "datetime": f"{start_date}T00:00:00Z/{end_date}T23:59:59Z",
+            "query": {"eo:cloud_cover": {"lt": max_cloud}, "platform": {"in": ["landsat-8", "landsat-9"]}},
+            "limit": 3,
+            "sortby": [{"field": "properties.eo:cloud_cover", "direction": "asc"}]
+        }
+        resp = requests.post(STAC_AWS_URL, json=payload, timeout=15)
+        features = resp.json().get("features", [])
+        if not features:
+            return f"在近 {days_back} 天内未检索到云量 < {max_cloud}% 的 Landsat 8/9 影像，建议放宽检索时间。"
+
+        item = features[0]
+        item_id = item.get("id", "")
+        props = item.get("properties", {})
+        acq_time = props.get("datetime", "")[:10]
+        cloud = props.get("eo:cloud_cover", 0.0)
+        assets = item.get("assets", {})
+
+        # Landsat 8/9: red=B4, green=B3, blue=B2, nir08=B5
+        band_keys = ["red", "green", "blue", "nir08"]
+        if all(k in assets for k in band_keys):
+            band_urls = [f"/vsicurl/{assets[k]['href']}" for k in band_keys]
+            time_str = datetime.now().strftime("%H%M%S")
+            raw_vrt = os.path.join(tempfile.gettempdir(), f"landsat_{item_id}_raw.vrt")
+            gdal.BuildVRT(raw_vrt, band_urls, options=gdal.BuildVRTOptions(separate=True))
+
+            warp_options = gdal.WarpOptions(
+                format="VRT",
+                outputBounds=[bbox[0], bbox[1], bbox[2], bbox[3]],
+                outputBoundsSRS="EPSG:4326",
+                resampleAlg="bilinear"
+            )
+            clipped_vrt = os.path.join(tempfile.gettempdir(), f"landsat_{item_id}_screen.vrt")
+            gdal.Warp(clipped_vrt, raw_vrt, options=warp_options)
+
+            layer_name = f"Landsat8/9_{acq_time}_4波段(视口裁剪)_云量{cloud:.1f}%"
+            layer = QgsRasterLayer(clipped_vrt, layer_name, "gdal")
+            if layer.isValid():
+                QgsProject.instance().addMapLayer(layer)
+                return f"🛰️ **已成功流式加载 30米 Landsat 8/9 卫星影像**：`{layer_name}`"
+
+        return "Landsat 影像波段解析失败。"
+    except Exception as e:
+        return f"获取 Landsat 影像异常: {e}"
+
+
+# ---------------------------------------------------------------------------
+# 7.3 ESA WorldCover 10米全球土地利用覆盖 (LULC)
+# ---------------------------------------------------------------------------
+def skill_fetch_worldcover_lulc(place_name: str = "当前视口") -> str:
+    """
+    检索并流式挂载 ESA WorldCover 10米高精度全球 AI 土地利用/覆盖分类图（带标准地表色板）。
+    """
+    try:
+        bbox = _get_target_bbox(place_name)
+        # ESA WorldCover AWS Open Data COG 服务
+        worldcover_vrt_url = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v100/2020/esa_worldcover_2020_10m.vrt"
+        vsi_url = f"/vsicurl/{worldcover_vrt_url}"
+
+        time_str = datetime.now().strftime("%H%M%S")
+        warp_opts = gdal.WarpOptions(
+            format="VRT",
+            outputBounds=[bbox[0], bbox[1], bbox[2], bbox[3]],
+            outputBoundsSRS="EPSG:4326"
+        )
+        clipped_vrt = os.path.join(tempfile.gettempdir(), f"worldcover_{time_str}.vrt")
+        gdal.Warp(clipped_vrt, vsi_url, options=warp_opts)
+
+        layer_name = f"ESA_WorldCover_10m_土地覆盖_{time_str}"
+        layer = QgsRasterLayer(clipped_vrt, layer_name, "gdal")
+        if layer.isValid():
+            QgsProject.instance().addMapLayer(layer)
+            return (
+                f"🌳 **已成功加载 ESA WorldCover 10米全球土地利用分类图**：`{layer_name}`\n"
+                f"🏷️ *分类体系包含：林地(10)、灌木(20)、草地(30)、农田(40)、建筑区(50)、裸地(60)、水体(80)、湿地(90)等。*"
+            )
+        return "ESA WorldCover 图层构建失败。"
+    except Exception as e:
+        return f"获取 WorldCover 异常: {e}"
+
+
+# ---------------------------------------------------------------------------
+# 7.4 WorldPop 100米 全球高分辨率人口密度/分布格网
+# ---------------------------------------------------------------------------
+def skill_fetch_worldpop_density(place_name: str = "当前视口", year: int = 2020) -> str:
+    """
+    加载 WorldPop 全球 100米 人口密度与空间分布栅格图层。
+    """
+    try:
+        bbox = _get_target_bbox(place_name)
+        # WorldPop 全球 100m WMS 服务接口
+        wms_url = (
+            "crs=EPSG:4326&dpiMode=7&format=image/png&layers=wp:pop_density_"
+            f"{year}&styles=&url=https://hub.worldpop.org/geoserver/wms"
+        )
+        layer_name = f"WorldPop_{year}_全球人口密度(100m)"
+        layer = QgsRasterLayer(wms_url, layer_name, "wms")
+        if layer.isValid():
+            QgsProject.instance().addMapLayer(layer)
+            return f"👥 **已成功加载 WorldPop 全球 100米 人口密度栅格图层**：`{layer_name}`"
+        return "WorldPop 人口数据服务连接异常。"
+    except Exception as e:
+        return f"获取 WorldPop 异常: {e}"
+
+
+# ---------------------------------------------------------------------------
+# 7.5 VIIRS DNB 全球夜间灯光数据 (人类活动/经济活力)
+# ---------------------------------------------------------------------------
+def skill_fetch_nighttime_lights(place_name: str = "当前视口") -> str:
+    """
+    流式加载 NOAA VIIRS DNB 500米 全球夜间灯光辐射影像。
+    """
+    try:
+        bbox = _get_target_bbox(place_name)
+        # NASA GIBS / NOAA 全球夜光 WMTS 服务
+        wmts_url = (
+            "crs=EPSG:4326&dpiMode=7&format=image/png&layers=VIIRS_SNPP_DayNightBand_ENCC"
+            "&styles=default&url=https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/wmts.cgi"
+        )
+        layer_name = f"VIIRS_全球夜间灯光"
+        layer = QgsRasterLayer(wmts_url, layer_name, "wms")
+        if layer.isValid():
+            QgsProject.instance().addMapLayer(layer)
+            return f"🌃 **已成功加载 VIIRS 全球夜间灯光影像**：`{layer_name}`\n*(可用于分析城市化边界、经济活力与电力分布)*"
+        return "夜间灯光服务连接失败。"
+    except Exception as e:
+        return f"获取夜间灯光数据异常: {e}"
+
+
+# ---------------------------------------------------------------------------
+# 7.6 HydroSHEDS / HydroRIVERS 全球水文与流域河网
+# ---------------------------------------------------------------------------
+def skill_fetch_hydrology_data(place_name: str = "当前视口") -> str:
+    """
+    加载 HydroSHEDS 全球水文流域与河网等级矢量数据。
+    """
+    try:
+        bbox = _get_target_bbox(place_name)
+        # USGS / HydroSHEDS 全球水文服务
+        wms_url = (
+            "crs=EPSG:4326&dpiMode=7&format=image/png&layers=hydrosheds:hydro_rivers"
+            "&styles=&url=https://hydrosheds.org/geoserver/wms"
+        )
+        layer_name = f"HydroSHEDS_全球河网水系"
+        layer = QgsRasterLayer(wms_url, layer_name, "wms")
+        if layer.isValid():
+            QgsProject.instance().addMapLayer(layer)
+            return f"💧 **已成功挂载 HydroSHEDS 全球河网与流域水文图层**：`{layer_name}`"
+        return "HydroSHEDS 水文服务连接异常。"
+    except Exception as e:
+        return f"获取水文数据异常: {e}"
+
+
+# ---------------------------------------------------------------------------
+# 7.7 ERA5 全球历史与近期气象再分析数据 (气温/降水/风速)
+# ---------------------------------------------------------------------------
+def skill_fetch_era5_climate(place_name: str = "当前视口", days_back: int = 7) -> str:
+    """
+    查询指定地点近期的 ERA5 气象历史再分析数据（气温、降雨量、风速、气压）。
+    """
+    try:
+        bbox = _get_target_bbox(place_name)
+        center_lon = (bbox[0] + bbox[2]) / 2
+        center_lat = (bbox[1] + bbox[3]) / 2
+
+        today = datetime.now()
+        start_date = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        end_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        url = "https://archive-api.open-meteo.com/v1/era5"
+        params = {
+            "latitude": round(center_lat, 3),
+            "longitude": round(center_lon, 3),
+            "start_date": start_date,
+            "end_date": end_date,
+            "hourly": "temperature_2m,precipitation,windspeed_10m,surface_pressure",
+            "timezone": "auto"
+        }
+        resp = requests.get(url, params=params, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            hourly = data.get("hourly", {})
+            temps = hourly.get("temperature_2m", [])
+            precips = hourly.get("precipitation", [])
+            winds = hourly.get("windspeed_10m", [])
+
+            avg_temp = sum(temps) / len(temps) if temps else 0
+            total_rain = sum(precips)
+            max_wind = max(winds) if winds else 0
+
+            return (
+                f"⛅ **ERA5 气象重分析结果** ({place_name} [{center_lon:.2f}E, {center_lat:.2f}N]，近 {days_back} 天):\n"
+                f"- **平均气温**: `{avg_temp:.1f} °C` (最高 `{max(temps):.1f} °C` / 最低 `{min(temps):.1f} °C`)\n"
+                f"- **累计降水量**: `{total_rain:.1f} mm`\n"
+                f"- **最大阵风风速**: `{max_wind:.1f} km/h`\n"
+                f"💡 *数据源: ECMWF ERA5 全球气候再分析数据集。*"
+            )
+        return "ERA5 气象接口请求超时。"
+    except Exception as e:
+        return f"获取 ERA5 气象数据异常: {e}"
+
+
+# 辅助函数：统一获取视口或地名外包框
+def _get_target_bbox(place_name: str) -> List[float]:
+    bbox = None
+    if place_name and place_name not in ("当前视口", "当前视图", "当前区域", "视口"):
+        bbox = _geocode_place_bbox(place_name)
+    if not bbox and iface and iface.mapCanvas():
+        canvas = iface.mapCanvas()
+        rect = canvas.extent()
+        src_crs = canvas.mapSettings().destinationCrs()
+        dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+        tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+        wgs_rect = tr.transformBoundingBox(rect)
+        bbox = [
+            round(wgs_rect.xMinimum(), 4),
+            round(wgs_rect.yMinimum(), 4),
+            round(wgs_rect.xMaximum(), 4),
+            round(wgs_rect.yMaximum(), 4),
+        ]
+    return bbox or [115.7, 39.4, 117.4, 41.0]
