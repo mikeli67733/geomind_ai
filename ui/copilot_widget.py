@@ -631,6 +631,9 @@ class LlmCopilotWidget(QWidget):
             self._request_backend_copilot()
 
     def _on_copilot_finished(self):
+        # 1. 标记 LLM 任务已完全结束
+        self._llm_task = None
+
         if self._current_assistant_item:
             round_content = self._current_assistant_item.get("round_content", "")
             round_reasoning = self._current_assistant_item.get("round_reasoning", "")
@@ -650,6 +653,9 @@ class LlmCopilotWidget(QWidget):
         self._reset_btn()
 
     def _on_copilot_error(self, err_msg: str):
+        # 1. 标记 LLM 任务已结束
+        self._llm_task = None
+
         self.display_items.append(
             {"id": f"err_{time.time()}", "role": "system_error", "content": f"无法获取 AI 回复：{err_msg}"})
         self._render_chat_ui(force=True)
@@ -935,6 +941,12 @@ class LlmCopilotWidget(QWidget):
     # -- 辅助方法 -----------------------------------------------------------
 
     def _scroll_to_bottom(self):
+        """双保险置底：先移动 QTextCursor，再延迟一帧等待 Qt HTML 布局计算完毕强行拉到底部。"""
+        from qgis.PyQt.QtGui import QTextCursor
+        self.history_browser.moveCursor(QTextCursor.End)
+        QTimer.singleShot(20, self._force_scroll_bottom)
+
+    def _force_scroll_bottom(self):
         sb = self.history_browser.verticalScrollBar()
         sb.setValue(sb.maximum())
 
@@ -944,4 +956,4 @@ class LlmCopilotWidget(QWidget):
             self.send_btn.setText("🚀 发送")
             self.stop_btn.setEnabled(False)
             self._consecutive_tool_calls = []
-        self._scroll_to_bottom()
+            self._scroll_to_bottom()
