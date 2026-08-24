@@ -245,63 +245,67 @@ def _geocode_place_bbox(place_name: str) -> Optional[List[float]]:
     return None
 
 
-def _get_target_bbox(place_name: str, max_span: float = 0.15) -> Tuple[List[float], str]:
+def _get_target_bbox(place_name: str = "当前视口", max_span: float = 0.20) -> Tuple[List[float], str]:
     """
-    统一获取目标区域经纬度外包框。
-    【核心防篡改】优先沿用当前画布视口；若显式给出地名，则将画布范围直接对齐到
-    计算出的安全 bbox，确保"用户看到的范围"与"后续函数实际请求数据的范围"完全一致。
-
-    【修复说明】
-    - 原实现在定位成功后只 `setCenter` + `zoomScale`，画布范围与 `final_bbox` 并不是
-      同一个矩形，容易造成"看起来范围偏大/对不上"的错觉。现在改为直接 `setExtent`。
-    - 地名解析失败时，原实现会静默回退到当前画布视口，容易被误认为定位跑偏；
-      现在会在返回消息中显式提示解析失败。
+    【纯净屏幕视口提取】
+    1. 默认 100% 提取当前 QGIS 屏幕画布可见矩形范围；
+    2. 绝不改变画布缩放与中心点；
+    3. 仅当屏幕范围过大（超出 max_span）时做防爆上限截断，小范围绝不强行放大。
     """
-    bbox = None
-    located_msg = ""
     canvas = iface.mapCanvas() if iface else None
+    located_msg = ""
+    bbox = None
 
-    # 1. 显式地名检索
-    if place_name and place_name not in ("当前视口", "当前视图", "当前区域", "视口", "current", ""):
+    # 1. 仅当用户【明确指定了具体地名】（且不是默认的"当前视口"）时，才尝试地理编码
+    is_explicit_place = place_name and place_name not in (
+        "当前视口", "当前视图", "当前区域", "视口", "current", "", None
+    )
+
+    if is_explicit_place:
         bbox = _geocode_place_bbox(place_name)
         if bbox:
-            located_msg = f"📍 **已定位至目标区域**：`{place_name}`\n"
+            located_msg = f"📍 已匹配目标地名范围：`{place_name}`\n"
         else:
-            located_msg = f"⚠️ **未能解析地名** `{place_name}`，已回退为当前画布视口\n"
+            located_msg = f"⚠️ 未能解析地名 `{place_name}`，已直接使用当前屏幕视口\n"
 
-    # 2. 若未显式传入地名（或解析失败），直接取当前画布范围
-    if not bbox and canvas:
+    # 2. 【核心】直接抓取当前屏幕可见范围的实际物理矩形
+    if bbox is None and canvas:
         rect = canvas.extent()
         src_crs = canvas.mapSettings().destinationCrs()
         dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
         tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
         wgs_rect = tr.transformBoundingBox(rect)
+
+        # 严格按照屏幕当前的四至经纬度提取
         bbox = [
-            round(wgs_rect.xMinimum(), 4),
-            round(wgs_rect.yMinimum(), 4),
-            round(wgs_rect.xMaximum(), 4),
-            round(wgs_rect.yMaximum(), 4),
+            round(wgs_rect.xMinimum(), 6),
+            round(wgs_rect.yMinimum(), 6),
+            round(wgs_rect.xMaximum(), 6),
+            round(wgs_rect.yMaximum(), 6),
         ]
 
-    # 兜底默认值 (西安钟楼核心区)
+    # 兜底默认值（防止无图层且画布异常）
     if not bbox or (bbox[0] == 0 and bbox[1] == 0):
         bbox = [108.92, 34.23, 108.98, 34.29]
 
-    final_bbox = _clamp_bbox(bbox, max_span_deg=max_span)
+    # 3. 仅做防爆上限保护（如用户缩放到全国视口时，防止下载几个 G 数据崩溃，居中截断；正常屏幕范围原样保留）
+    span_x = bbox[2] - bbox[0]
+    span_y = bbox[3] - bbox[1]
+    if span_x > max_span or span_y > max_span:
+        mid_x = (bbox[0] + bbox[2]) / 2.0
+        mid_y = (bbox[1] + bbox[3]) / 2.0
+        half = max_span / 2.0
+        final_bbox = [
+            round(mid_x - half, 6),
+            round(mid_y - half, 6),
+            round(mid_x + half, 6),
+            round(mid_y + half, 6)
+        ]
+        located_msg += f"⚠️ 当前屏幕跨度过大，已自动安全截断为中心 {max_span}° 核心区。\n"
+    else:
+        final_bbox = bbox
 
-    # 核心保护：若用户触发了新地名定位，直接把画布范围对齐到 final_bbox，
-    # 与后续实际拉取数据所用的范围保持严格一致（而不是仅平移中心点再按固定比例尺缩放）。
-    if place_name and place_name not in ("当前视口", "当前视图", "当前区域", "视口", "current", "") and bbox and canvas:
-        src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
-        dest_crs = canvas.mapSettings().destinationCrs()
-        tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
-
-        wgs_rect = QgsRectangle(final_bbox[0], final_bbox[1], final_bbox[2], final_bbox[3])
-        dest_rect = tr.transformBoundingBox(wgs_rect)
-
-        canvas.setExtent(dest_rect)
-        canvas.refresh()
-
+    # ❌ 彻底移除 canvas.setExtent() 和 zoom 任何修改视口的操作！
     return final_bbox, located_msg
 
 
@@ -509,16 +513,19 @@ def search_and_load_sentinel2(
 
 def skill_fetch_sentinel2_imagery(
     place_name: str = "当前视口",
+    date_start: str = None,
+    date_end: str = None,
     days_back: int = 14,
     max_cloud: int = 15,
     band_type: str = "4band"
 ) -> str:
-    """检索并流式加载 Sentinel-2 遥感影像（自动限制在约 15km 安全视口内）。"""
+    """检索并流式加载 Sentinel-2 遥感影像（自动限制在约 15km 安全视口内）。
+    支持指定任意起止日期 (date_start/date_end)，未指定时回退为按 days_back 回溯。"""
     bbox, located_msg = _get_target_bbox(place_name, max_span=0.15)
 
     today = datetime.now()
-    start_date = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    end_date = today.strftime("%Y-%m-%d")
+    end_date = date_end or today.strftime("%Y-%m-%d")
+    start_date = date_start or (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
     result = search_and_load_sentinel2(
         extent_bbox=bbox,
