@@ -66,6 +66,7 @@ SKILL_HUMAN_LABELS = {
     "skill_fetch_era5_climate": "查询 ECMWF ERA5 气象气候数据",
     "skill_web_search": "联网检索实时资讯与专业文档",
     "skill_fetch_webpage_content": "抓取并解析网页正文内容",
+    "skill_fetch_sentinel1_sar": "检索并流式加载 Sentinel-1 SAR 雷达影像"
 }
 
 
