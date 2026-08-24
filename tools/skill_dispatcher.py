@@ -1426,6 +1426,118 @@ def skill_fetch_landsat_imagery(
     except Exception as e:
         return f"获取 Landsat 影像异常: {e}"
 
+# Microsoft Planetary Computer:提供已签名(公开可读)的 Sentinel-1 GRD COG 资产。
+# 注:earth-search(AWS) 上的 sentinel-1-grd 资产为 requester-pays 的 s3:// 地址,
+# 匿名 /vsicurl/ 无法直接读取,因此这里改用 Planetary Computer 的 STAC + SAS 签名通道。
+STAC_MPC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
+MPC_SIGN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/sign"
+
+
+def _mpc_sign_href(href: str) -> str:
+    """为 Planetary Computer 上的受保护 blob 资产签发临时可匿名访问的 SAS URL。"""
+    try:
+        resp = requests.get(MPC_SIGN_URL, params={"href": href}, timeout=10)
+        if resp.status_code == 200:
+            return resp.json().get("href", href)
+    except Exception as e:
+        logger.warning(f"MPC SAS 签名失败,回退为原始 href: {e}")
+    return href
+
+
+def skill_fetch_sentinel1_sar(
+    place_name: str = "当前视口",
+    date_start: str = None,
+    date_end: str = None,
+    days_back: int = 14,
+    polarization: str = "vv"
+) -> str:
+    """
+    【在线遥感数据拉取】检索并流式加载 Sentinel-1 GRD 哨兵微波雷达影像 (SAR)。
+    通过 Microsoft Planetary Computer STAC 检索,自动限制在安全工作区/视口内。
+    适用于穿云透雾、全天候监测、水体提取及地表变化分析。
+    """
+    try:
+        bbox, located_msg = _get_target_bbox(place_name, max_span=0.20)
+
+        today = datetime.now()
+        if not date_end:
+            date_end = today.strftime("%Y-%m-%d")
+        if not date_start:
+            date_start = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+        pol = (polarization or "vv").lower()
+        if pol not in ("vv", "vh", "hh", "hv"):
+            pol = "vv"
+
+        payload = {
+            "collections": ["sentinel-1-grd"],
+            "bbox": bbox,
+            "datetime": f"{date_start}T00:00:00Z/{date_end}T23:59:59Z",
+            "limit": 5,
+            "sortby": [{"field": "datetime", "direction": "desc"}]
+        }
+        resp = requests.post(STAC_MPC_URL, json=payload, timeout=15)
+        if resp.status_code != 200:
+            return f"{located_msg}Sentinel-1 SAR 检索服务异常 (HTTP {resp.status_code})"
+
+        features = resp.json().get("features", [])
+        if not features:
+            return (f"{located_msg}在 {date_start} 至 {date_end} 期间未检索到该区域的 "
+                     f"Sentinel-1 SAR 影像,请放宽日期范围重试。")
+
+        # 优先选择含目标极化方式的最新一景,若无则退回该景任意可用极化波段
+        item = None
+        asset_key = None
+        for feat in features:
+            assets = feat.get("assets", {})
+            if pol in assets:
+                item, asset_key = feat, pol
+                break
+        if item is None:
+            for feat in features:
+                assets = feat.get("assets", {})
+                for k in ("vv", "vh", "hh", "hv"):
+                    if k in assets:
+                        item, asset_key = feat, k
+                        break
+                if item:
+                    break
+
+        if item is None:
+            return f"{located_msg}检索到 {len(features)} 景 Sentinel-1 影像,但均未包含可用的极化波段数据。"
+
+        props = item.get("properties", {})
+        acq_time = props.get("datetime", "")[:10]
+        orbit = props.get("sat:orbit_state", "")
+        item_id = item.get("id", "")
+        raw_href = item["assets"][asset_key]["href"]
+        signed_href = _mpc_sign_href(raw_href)
+
+        warp_options = gdal.WarpOptions(
+            format="VRT",
+            outputBounds=[bbox[0], bbox[1], bbox[2], bbox[3]],
+            outputBoundsSRS="EPSG:4326",
+            srcSRS="EPSG:4326",  # 原始 GRD 影像仅带 GCP，无标准仿射地理变换，需显式声明 GCP 所在坐标系
+            dstSRS="EPSG:4326",
+            tps=True,  # 使用薄板样条基于 GCP 进行精确校正（而非依赖不存在的仿射变换）
+            resampleAlg="bilinear"
+        )
+        clipped_vrt = os.path.join(tempfile.gettempdir(), f"s1_{item_id}_{asset_key}_screen.vrt")
+        gdal.Warp(clipped_vrt, f"/vsicurl/{signed_href}", options=warp_options)
+
+        layer_name = f"Sentinel1_SAR_{acq_time}_{asset_key.upper()}极化_{orbit or '未知轨道'}"
+        layer = QgsRasterLayer(clipped_vrt, layer_name, "gdal")
+        if layer.isValid():
+            QgsProject.instance().addMapLayer(layer)
+            if iface and iface.mapCanvas():
+                iface.mapCanvas().refresh()
+            return (f"{located_msg}📡 **已成功流式加载 Sentinel-1 SAR 雷达影像**:`{layer_name}`\n"
+                    f"(不受云层影响,像元值为后向散射振幅,图层已裁剪至安全工作区范围)")
+
+        return f"{located_msg}Sentinel-1 SAR 影像加载失败:栅格图层无效。"
+    except Exception as e:
+        logger.error(f"Sentinel-1 SAR fetch failed: {e}")
+        return f"获取 Sentinel-1 SAR 影像异常: {e}"
 
 def skill_fetch_worldcover_lulc(place_name: str = "当前视口") -> str:
     """检索并流式挂载 ESA WorldCover 10米全球土地利用覆盖分类图。"""
