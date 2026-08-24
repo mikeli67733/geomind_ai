@@ -509,16 +509,19 @@ def search_and_load_sentinel2(
 
 def skill_fetch_sentinel2_imagery(
     place_name: str = "当前视口",
+    date_start: str = None,
+    date_end: str = None,
     days_back: int = 14,
     max_cloud: int = 15,
     band_type: str = "4band"
 ) -> str:
-    """检索并流式加载 Sentinel-2 遥感影像（自动限制在约 15km 安全视口内）。"""
+    """检索并流式加载 Sentinel-2 遥感影像（自动限制在约 15km 安全视口内）。
+    支持指定任意起止日期 (date_start/date_end)，未指定时回退为按 days_back 回溯。"""
     bbox, located_msg = _get_target_bbox(place_name, max_span=0.15)
 
     today = datetime.now()
-    start_date = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    end_date = today.strftime("%Y-%m-%d")
+    end_date = date_end or today.strftime("%Y-%m-%d")
+    start_date = date_start or (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
     result = search_and_load_sentinel2(
         extent_bbox=bbox,
