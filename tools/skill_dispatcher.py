@@ -6,19 +6,11 @@ LLM skill dispatcher — bridges the Copilot backend to local tools.
 1. 图层物理画像探测（区分无人机/高分卫星/哨兵/在线瓦片）；
 2. 哨兵二号与 30m 全球 Copernicus DEM 在线流式 STAC 检索；
 3. 本地光谱/地形/滤波/聚类分析；
-4. 云端 AI 深度解译任务调度（内置自动安全中心裁剪，永不因视口过大而报错）；
+4. 云端 AI 深度解译任务调度；
 5. QGIS 原生 Processing 算子检索与防卡死执行；
 6. PyQGIS 动态代码防卡死安全沙箱执行器；
 7. OpenStreetMap 与全球多源开放数据接入（Natural Earth, Landsat, WorldCover 等）；
 8. 实时联网搜索与网页正文解析。
-
-【本次修复说明】
-1. 统一 max_span：将所有多源遥感数据拉取（Sentinel-2, DEM, Landsat, Sentinel-1 SAR, WorldCover等）
-   及地名解析的安全跨度统一绑定到全局常量 DEFAULT_MAX_SPAN (0.15° ≈ 15km)，彻底解决多源数据
-   因默认跨度不一致导致的范围大小不匹配问题。
-2. DEM 瓦片裁剪对齐：Terrarium 高程瓦片解码后增加 gdal.Warp 精确四至裁切，确保 DEM 与
-   Sentinel-2 严格具备完全一致的经纬度边界。
-3. 地名定位视口同步：地名解析成功后主动同步地图画布，避免多工具连续调度时视口与地名基准脱节。
 """
 import os
 import re
@@ -61,27 +53,11 @@ from ..core.constants import (
     get_model_key_by_mode,
 )
 from ..core.logger import get_logger
-from .raster_ops import (
-    calc_spectral_index,
-    run_pca,
-    dem_analysis,
-    spatial_filter,
-    area_statistics,
-    kmeans_cluster,
-    raster_diff,
-    image_enhance,
-    raster_polygonize,
-)
 from .vector_ops import vector_simplify_and_smooth
 
 logger = get_logger("tools.skill_dispatcher")
 
 STAC_AWS_URL = "https://earth-search.aws.element84.com/v1/search"
-
-# ===========================================================================
-# 全局统一分析范围与安全跨度配置 (0.15° 约合 15km x 15km 核心工作区)
-# ===========================================================================
-DEFAULT_MAX_SPAN: float = 1.5
 
 
 # ===========================================================================
@@ -180,78 +156,67 @@ def get_active_layers() -> str:
 
 
 # ===========================================================================
-# 2. 地理编码、外包框安全钳制与多源遥感数据拉取
+# 2. 地理编码与多源遥感数据真实外包框拉取
 # ===========================================================================
 
-def _clamp_bbox(bbox: List[float], max_span_deg: float = DEFAULT_MAX_SPAN) -> List[float]:
-    """
-    【安全尺寸钳制】若 bbox 跨度超出安全阈值，自动以中心点为基准缩放至适中工作区。
-    """
-    min_lon, min_lat, max_lon, max_lat = bbox
-    span_x = max_lon - min_lon
-    span_y = max_lat - min_lat
-
-    if span_x > max_span_deg or span_y > max_span_deg:
-        mid_x = (min_lon + max_lon) / 2.0
-        mid_y = (min_lat + max_lat) / 2.0
-        half = max_span_deg / 2.0
-        return [
-            round(mid_x - half, 6),
-            round(mid_y - half, 6),
-            round(mid_x + half, 6),
-            round(mid_y + half, 6)
-        ]
+def _validate_bbox(bbox: List[float]) -> List[float]:
+    """保证 BBox 处于合法全球经纬度范围内 [-180, 180], [-90, 90]。"""
+    min_lon = max(-180.0, min(180.0, float(bbox[0])))
+    min_lat = max(-90.0, min(90.0, float(bbox[1])))
+    max_lon = max(-180.0, min(180.0, float(bbox[2])))
+    max_lat = max(-90.0, min(90.0, float(bbox[3])))
     return [round(min_lon, 6), round(min_lat, 6), round(max_lon, 6), round(max_lat, 6)]
 
 
 def _geocode_place_bbox(place_name: str) -> Optional[List[float]]:
     """
-    将地名解析为精细工作区外包框 [min_lon, min_lat, max_lon, max_lat]（统一 DEFAULT_MAX_SPAN 核心区）。
+    将地名解析为真实地理范围外包框 [min_lon, min_lat, max_lon, max_lat]。
     """
     quick_bboxes = {
-        "北京": [116.32, 39.84, 116.48, 39.98],
-        "上海": [121.40, 31.18, 121.56, 31.32],
-        "广州": [113.22, 23.08, 113.38, 23.20],
-        "深圳": [113.98, 22.50, 114.14, 22.62],
-        "成都": [104.00, 30.60, 104.14, 30.72],
-        "武汉": [114.24, 30.52, 114.38, 30.64],
-        "杭州": [120.10, 30.20, 120.24, 30.32],
-        "南京": [118.74, 31.98, 118.88, 32.10],
-        "重庆": [106.50, 29.50, 106.64, 29.62],
-        "西安": [108.92, 34.23, 108.98, 34.29],
-        "天津": [117.14, 39.08, 117.28, 39.20],
-        "苏州": [120.56, 31.26, 120.70, 31.38],
-        "太湖": [120.00, 31.10, 120.25, 31.30],
-        "青岛": [120.32, 36.04, 120.46, 36.16],
+        "北京": [115.42, 39.44, 117.51, 41.06],
+        "上海": [120.86, 30.67, 122.20, 31.87],
+        "广州": [112.96, 22.52, 114.05, 23.93],
+        "深圳": [113.75, 22.44, 114.63, 22.86],
+        "成都": [102.99, 30.09, 104.89, 31.44],
+        "武汉": [113.68, 29.97, 115.08, 31.36],
+        "杭州": [118.35, 29.19, 120.73, 30.56],
+        "南京": [118.36, 31.23, 119.24, 32.61],
+        "重庆": [105.29, 28.16, 110.19, 32.20],
+        "西安": [107.67, 33.70, 109.82, 34.75],
+        "天津": [116.71, 38.56, 118.06, 40.25],
+        "苏州": [119.92, 30.78, 121.37, 32.04],
+        "太湖": [119.89, 30.92, 120.60, 31.55],
+        "青岛": [119.50, 35.58, 121.01, 37.15],
     }
     for k, v in quick_bboxes.items():
-        if k in place_name:
-            return _clamp_bbox(v, max_span_deg=DEFAULT_MAX_SPAN)
+        if place_name in (k, f"{k}市"):
+            return _validate_bbox(v)
 
     try:
-        url = f"https://nominatim.openstreetmap.org/search?q={place_name}&format=json&limit=1"
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {"q": place_name, "format": "json", "limit": 1}
         headers = {"User-Agent": "GeoMind-QGIS-Plugin/1.0"}
-        r = requests.get(url, headers=headers, timeout=5)
+        r = requests.get(url, params=params, headers=headers, timeout=5)
         if r.status_code == 200 and r.json():
             res = r.json()[0]
             bb = res.get("boundingbox")
-            if bb:
+            if bb and len(bb) == 4:
                 parsed_bbox = [float(bb[2]), float(bb[0]), float(bb[3]), float(bb[1])]
-                return _clamp_bbox(parsed_bbox, max_span_deg=DEFAULT_MAX_SPAN)
+                return _validate_bbox(parsed_bbox)
             lat, lon = float(res["lat"]), float(res["lon"])
-            half = DEFAULT_MAX_SPAN / 2.0
-            return [round(lon - half, 6), round(lat - half, 6), round(lon + half, 6), round(lat + half, 6)]
+            # 若无外包框返回则生成约 5km 基础视窗
+            half = 0.025
+            return _validate_bbox([lon - half, lat - half, lon + half, lat + half])
     except Exception:
         pass
     return None
 
 
-def _get_target_bbox(place_name: str = "当前视口", max_span: float = DEFAULT_MAX_SPAN) -> Tuple[List[float], str]:
+def _get_target_bbox(place_name: str = "当前视口") -> Tuple[List[float], str]:
     """
-    【统一空间视口提取】
-    1. 显式地名：解析坐标并主动同步地图视口，保证后续多源数据基于同一基准；
-    2. 默认提取当前 QGIS 画布可见范围矩形；
-    3. 超出 max_span (统一 DEFAULT_MAX_SPAN) 时安全居中截断。
+    【空间视口提取】
+    1. 若指定地名：解析坐标并定位到该地名真实范围；
+    2. 若未指定地名：精确提取当前 QGIS 画布真实的可见范围矩形，不做多余截断。
     """
     canvas = iface.mapCanvas() if iface else None
     located_msg = ""
@@ -274,9 +239,9 @@ def _get_target_bbox(place_name: str = "当前视口", max_span: float = DEFAULT
                 canvas.setExtent(rect)
                 canvas.refresh()
         else:
-            located_msg = f"⚠️ 未能解析地名 `{place_name}`，已直接使用当前屏幕视口\n"
+            located_msg = f"⚠️ 未能解析地名 `{place_name}`，已使用当前屏幕视口\n"
 
-    # 2. 从当前屏幕视口提取物理矩形
+    # 2. 从当前屏幕视口提取物理矩形（不缩放、不截断，所见即所得）
     if bbox is None and canvas:
         rect = canvas.extent()
         src_crs = canvas.mapSettings().destinationCrs()
@@ -295,23 +260,7 @@ def _get_target_bbox(place_name: str = "当前视口", max_span: float = DEFAULT
     if not bbox or (bbox[0] == 0 and bbox[1] == 0):
         bbox = [108.92, 34.23, 108.98, 34.29]
 
-    # 3. 统一防爆上限保护
-    span_x = bbox[2] - bbox[0]
-    span_y = bbox[3] - bbox[1]
-    if span_x > max_span or span_y > max_span:
-        mid_x = (bbox[0] + bbox[2]) / 2.0
-        mid_y = (bbox[1] + bbox[3]) / 2.0
-        half = max_span / 2.0
-        final_bbox = [
-            round(mid_x - half, 6),
-            round(mid_y - half, 6),
-            round(mid_x + half, 6),
-            round(mid_y + half, 6)
-        ]
-        located_msg += f"⚠️ 当前屏幕跨度过大，已自动安全截断为中心 {max_span}° 核心区。\n"
-    else:
-        final_bbox = bbox
-
+    final_bbox = _validate_bbox(bbox)
     return final_bbox, located_msg
 
 
@@ -322,10 +271,9 @@ def skill_geocode_address(
     zoom_scale: float = 6000.0,
 ) -> str:
     """
-    地址地理编码并将 QGIS 画布精细聚焦至目标设施/园区（默认 1:6,000 比例尺，防止 AI 像元溢出）。
+    地址地理编码并将 QGIS 画布精细聚焦至目标设施/园区。
     """
     source_type = "天地图"
-    TIANDITU_API_KEY = '7ba1ada42adefb5df42e4a1364b321c4'
     try:
         if iface is None:
             return "错误：获取不到 QGIS iface 对象，无法操作地图画布"
@@ -412,7 +360,7 @@ def skill_geocode_address(
         canvas.setCenter(canvas_point)
         canvas.zoomScale(zoom_scale)
         canvas.refresh()
-        return f"📍 地址定位完成：{address_text} (经度={lon:.6f}, 纬度={lat:.6f})，画布已精细聚焦 (1:{int(zoom_scale)})。"
+        return f"📍 地址定位完成：{address_text} (经度={lon:.6f}, 纬度={lat:.6f})，画布已聚焦 (1:{int(zoom_scale)})。"
     except Exception as e:
         logger.error("Geocode failed: %s", e)
         return f"地址解析/定位失败: {e}"
@@ -426,7 +374,7 @@ def search_and_load_sentinel2(
     auto_load_first: bool = True,
     band_type: str = "4band"
 ) -> str:
-    """底层 AWS STAC 检索 + 按安全视口裁剪的虚拟 VRT 流式加载 Sentinel-2 影像。"""
+    """底层 AWS STAC 检索 + 按目标区域裁剪的虚拟 VRT 流式加载 Sentinel-2 影像。"""
     today = datetime.now()
     if not date_end:
         date_end = today.strftime("%Y-%m-%d")
@@ -510,8 +458,7 @@ def search_and_load_sentinel2(
                         iface.mapCanvas().refresh()
 
         if loaded_layer_name:
-            result_lines.append(f"\n🎉 **已自动为您流式加载影像**：`{loaded_layer_name}`\n"
-                                f"📐 *图层已安全裁剪为精细工作区范围 (~{int(DEFAULT_MAX_SPAN*100)}km)。*")
+            result_lines.append(f"\n🎉 **已自动为您流式加载影像**：`{loaded_layer_name}`")
         return "\n".join(result_lines)
     except Exception as e:
         return f"检索 Sentinel-2 影像异常: {e}"
@@ -525,8 +472,8 @@ def skill_fetch_sentinel2_imagery(
     max_cloud: int = 15,
     band_type: str = "4band"
 ) -> str:
-    """检索并流式加载 Sentinel-2 遥感影像（自动限制在统一安全视口内）。"""
-    bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
+    """检索并流式加载 Sentinel-2 遥感影像。"""
+    bbox, located_msg = _get_target_bbox(place_name)
 
     today = datetime.now()
     end_date = date_end or today.strftime("%Y-%m-%d")
@@ -626,11 +573,10 @@ def _download_and_decode_terrarium_tif(
 
 def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP30") -> str:
     """
-    【高可靠多通道】检索并下载当前视口或指定区域的高精度 30米 全球真实 DEM 高程栅格 (GeoTIFF)。
-    已统一绑定 DEFAULT_MAX_SPAN 并强制进行 BBox 裁切对齐。
+    检索并下载当前视口或指定区域的高精度 30米 全球真实 DEM 高程栅格 (GeoTIFF)。
     """
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
+        bbox, located_msg = _get_target_bbox(place_name)
         min_lon, min_lat, max_lon, max_lat = bbox
 
         time_str = datetime.now().strftime("%H%M%S")
@@ -700,7 +646,7 @@ def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP3
         except Exception as e_stac:
             logger.warning(f"STAC DEM channel fallback: {e_stac}")
 
-        # 通道 3：AWS Terrarium 瓦片解码 + 强制按 Bbox 裁切对齐
+        # 通道 3：AWS Terrarium 瓦片解码 + 按真实范围裁切
         raw_dem_tif = os.path.join(tempfile.gettempdir(), f"raw_dem_{time_str}.tif")
         ok = _download_and_decode_terrarium_tif(min_lon, min_lat, max_lon, max_lat, raw_dem_tif)
         if ok:
@@ -722,7 +668,7 @@ def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP3
                 QgsProject.instance().addMapLayer(layer)
                 return (
                     f"{located_msg}⛰️ **已通过高程瓦片解码成功生成真实 DEM 栅格**：`{layer_name}`\n"
-                    f"💡 *该栅格已统一严格裁切至当前工作区范围，完全支持坡度、坡向、填洼与积水区分析算子。*"
+                    f"💡 *该栅格严格对齐当前工作区范围，完全支持坡度、坡向、填洼与积水区分析算子。*"
                 )
 
         return f"{located_msg}❌ 获取 DEM 失败：所有在线通道与瓦片解码均未完成，请检查网络。"
@@ -735,19 +681,120 @@ def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP3
 # 3. 栅格与矢量基础算子调度
 # ===========================================================================
 
-def skill_calc_spectral_index(layer_name: str, index_type: str, b1_idx: int, b2_idx: int, b3_idx: int = 1) -> str:
-    """计算多光谱物理指数 (NDVI, GNDVI, NDWI, EVI 等)。"""
+def skill_calc_spectral_index(
+        layer_name: str,
+        index_type: str,
+        b1_idx: int,
+        b2_idx: int,
+        b3_idx: int = 1
+) -> str:
+    """
+    【PyQGIS 原生光谱指数计算引擎】直接在内存中计算多光谱物理指数并上屏渲染。
+
+    参数规则（以哨兵 1=Red, 2=Green, 3=Blue, 4=NIR 为例）：
+    - NDVI  (植被指数): b1_idx 为 Red(1), b2_idx 为 NIR(4)  -> 公式: (NIR - Red) / (NIR + Red)
+    - NDWI  (水体指数): b1_idx 为 Green(2), b2_idx 为 NIR(4) -> 公式: (Green - NIR) / (Green + NIR)
+    - MNDWI (修正水体): b1_idx 为 Green(2), b2_idx 为 SWIR    -> 公式: (Green - SWIR) / (Green + SWIR)
+    - GNDVI (绿度指数): b1_idx 为 Green(2), b2_idx 为 NIR(4) -> 公式: (NIR - Green) / (NIR + Green)
+    - NDBI  (建筑指数): b1_idx 为 NIR(4), b2_idx 为 SWIR     -> 公式: (SWIR - NIR) / (SWIR + NIR)
+    - EVI   (增强植被): b1_idx 为 Red(1), b2_idx 为 NIR(4), b3_idx 为 Blue(3)
+    """
     try:
         layer = get_layer_by_name(layer_name, "raster")
         profile = _inspect_raster_profile(layer)
         if profile["is_online_tile"]:
             return f"❌ 错误：图层 `{layer_name}` 是在线 XYZ 瓦片（仅 RGB 图像），缺乏物理反射率，严禁计算物理光谱指数！"
 
-        calc_spectral_index(layer.source(), index_type, b1_idx, b2_idx, b3_idx)
-        return f"光谱指数 [{index_type.upper()}] 计算成功并已加载至地图。"
-    except Exception as e:
-        return f"计算失败: {e}"
+        # 1. 打开栅格并校验波段
+        ds = gdal.Open(layer.source())
+        if ds is None:
+            return f"❌ 无法打开栅格数据源: {layer.source()}"
 
+        max_b = ds.RasterCount
+        if b1_idx > max_b or b2_idx > max_b:
+            return f"❌ 波段索引越界：当前图层仅有 {max_b} 个波段，无法读取波段 {b1_idx} 或 {b2_idx}。"
+
+        b1 = ds.GetRasterBand(b1_idx).ReadAsArray().astype(np.float32)
+        b2 = ds.GetRasterBand(b2_idx).ReadAsArray().astype(np.float32)
+        b3 = ds.GetRasterBand(b3_idx).ReadAsArray().astype(np.float32) if (b3_idx <= max_b and b3_idx > 0) else None
+
+        idx_type = index_type.strip().upper()
+        eps = 1e-6
+
+        # 2. 原生标准物理公式解析（严格保证被减数与减数顺序正确）
+        with np.errstate(divide='ignore', invalid='ignore'):
+            if idx_type == "NDWI":
+                # 水体：(Green - NIR) / (Green + NIR)，水体为正高值（接近 +1）
+                denom = b1 + b2
+                result = np.where(np.abs(denom) < eps, 0.0, (b1 - b2) / (denom + eps))
+            elif idx_type == "NDVI":
+                # 植被：(NIR - Red) / (NIR + Red)，植被为正高值
+                denom = b2 + b1
+                result = np.where(np.abs(denom) < eps, 0.0, (b2 - b1) / (denom + eps))
+            elif idx_type == "MNDWI":
+                # 城镇水体：(Green - SWIR) / (Green + SWIR)
+                denom = b1 + b2
+                result = np.where(np.abs(denom) < eps, 0.0, (b1 - b2) / (denom + eps))
+            elif idx_type == "GNDVI":
+                # 绿度：(NIR - Green) / (NIR + Green)
+                denom = b2 + b1
+                result = np.where(np.abs(denom) < eps, 0.0, (b2 - b1) / (denom + eps))
+            elif idx_type == "NDBI":
+                # 建筑：(SWIR - NIR) / (SWIR + NIR)
+                denom = b2 + b1
+                result = np.where(np.abs(denom) < eps, 0.0, (b2 - b1) / (denom + eps))
+            elif idx_type == "EVI":
+                # EVI: 2.5 * (NIR - Red) / (NIR + 6*Red - 7.5*Blue + 1)
+                if b3 is None:
+                    return "❌ 计算 EVI 缺少蓝波段(b3_idx)。"
+                denom = b2 + 6.0 * b1 - 7.5 * b3 + 1.0
+                result = np.where(np.abs(denom) < eps, 0.0, 2.5 * (b2 - b1) / (denom + eps))
+            else:
+                # 兜底通用归一化
+                denom = b1 + b2
+                result = np.where(np.abs(denom) < eps, 0.0, (b1 - b2) / (denom + eps))
+
+            # 异常值截断与清洗
+            result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=-1.0)
+            if idx_type in ("NDVI", "NDWI", "MNDWI", "GNDVI", "NDBI"):
+                result = np.clip(result, -1.0, 1.0)
+
+        # 3. 将结果输出为 Float32 GeoTIFF
+        time_str = datetime.now().strftime("%H%M%S")
+        out_tif_path = os.path.join(tempfile.gettempdir(), f"{idx_type}_{time_str}.tif")
+
+        driver = gdal.GetDriverByName("GTiff")
+        h, w = result.shape
+        out_ds = driver.Create(out_tif_path, w, h, 1, gdal.GDT_Float32)
+        out_ds.SetGeoTransform(ds.GetGeoTransform())
+        out_ds.SetProjection(ds.GetProjection())
+
+        band = out_ds.GetRasterBand(1)
+        band.WriteArray(result)
+        band.SetNoDataValue(-9999.0)
+        band.FlushCache()
+        out_ds = None
+        ds = None
+
+        # 4. 加载到 QGIS 工程并设置默认图层名
+        out_layer_name = f"{idx_type}_结果"
+        new_layer = QgsRasterLayer(out_tif_path, out_layer_name, "gdal")
+
+        if not new_layer.isValid():
+            return f"❌ 指数生成完成，但加载至 QGIS 失败。"
+
+        QgsProject.instance().addMapLayer(new_layer)
+        if iface and iface.mapCanvas():
+            iface.mapCanvas().refresh()
+
+        return (
+            f"🎉 **光谱指数 [{idx_type}] 计算成功并已加载**：`{out_layer_name}`\n"
+            f"💡 *水体/目标像元理论值已正确映射在 (0, 1] 正区间，可直接调用 `skill_raster_threshold` 提取。*"
+        )
+
+    except Exception as e:
+        logger.error(f"Calculate spectral index error: {e}")
+        return f"光谱指数计算失败: {e}"
 
 def skill_raster_threshold(layer_name: str, min_val: float, max_val: float = 1.0, band_idx: int = 1) -> str:
     """对栅格指数或 DEM 执行快速阈值二值化提取（生成 0/1 掩膜）。"""
@@ -780,129 +827,452 @@ def skill_raster_threshold(layer_name: str, min_val: float, max_val: float = 1.0
         return f"阈值提取失败: {e}"
 
 
+# ===========================================================================
+# 3. 栅格与矢量核心算法引擎 (纯 PyQGIS / GDAL / NumPy 自包含原生实现)
+# ===========================================================================
+
 def skill_run_pca(layer_name: str, n_comp: int = 3) -> str:
-    """PCA 主成分分析。"""
+    """【PyQGIS 原生】PCA 多波段主成分分析。"""
     try:
         layer = get_layer_by_name(layer_name, "raster")
-        run_pca(layer.source(), n_comp)
-        return f"成功对 `{layer_name}` 执行 PCA，生成 {n_comp} 个主成分图层。"
+        ds = gdal.Open(layer.source())
+        if ds is None:
+            return f"❌ 无法打开栅格: {layer.source()}"
+
+        band_count = ds.RasterCount
+        if band_count < 2:
+            return f"❌ PCA 分析至少需要 2 个波段，当前图层仅有 {band_count} 个波段。"
+
+        # 读取全部波段数据
+        bands_data = [ds.GetRasterBand(i + 1).ReadAsArray().astype(np.float32) for i in range(band_count)]
+        h, w = bands_data[0].shape
+        X = np.stack([b.flatten() for b in bands_data], axis=1)
+
+        # 协方差矩阵与特征分解
+        mean = np.mean(X, axis=0)
+        X_centered = X - mean
+        cov = np.cov(X_centered, rowvar=False)
+
+        eig_vals, eig_vecs = np.linalg.eigh(cov)
+        sort_indices = np.argsort(eig_vals)[::-1]
+        eig_vecs = eig_vecs[:, sort_indices]
+
+        actual_comp = min(n_comp, band_count)
+        loaded_layers = []
+        time_str = datetime.now().strftime("%H%M%S")
+
+        driver = gdal.GetDriverByName("GTiff")
+        for i in range(actual_comp):
+            pc_arr = np.dot(X_centered, eig_vecs[:, i]).reshape((h, w)).astype(np.float32)
+            out_tif = os.path.join(tempfile.gettempdir(), f"PCA_PC{i + 1}_{time_str}.tif")
+
+            out_ds = driver.Create(out_tif, w, h, 1, gdal.GDT_Float32)
+            out_ds.SetGeoTransform(ds.GetGeoTransform())
+            out_ds.SetProjection(ds.GetProjection())
+            out_ds.GetRasterBand(1).WriteArray(pc_arr)
+            out_ds.FlushCache()
+            out_ds = None
+
+            pc_layer_name = f"{layer_name}_PCA_PC{i + 1}"
+            lyr = QgsRasterLayer(out_tif, pc_layer_name, "gdal")
+            if lyr.isValid():
+                QgsProject.instance().addMapLayer(lyr)
+                loaded_layers.append(pc_layer_name)
+
+        ds = None
+        if iface and iface.mapCanvas():
+            iface.mapCanvas().refresh()
+
+        return f"🎉 成功对 `{layer_name}` 完成 PCA 分析，已生成并加载 {len(loaded_layers)} 个主成分图层：\n- " + "\n- ".join(loaded_layers)
     except Exception as e:
         return f"PCA 分析失败: {e}"
 
 
-def skill_dem_analysis(layer_name: str, analysis_type: str, z_factor: float = 1.0) -> str:
-    """DEM 地形特征提取 (hillshade, slope, aspect, TRI)。"""
+def skill_dem_analysis(layer_name: str, analysis_type: str = "hillshade", z_factor: float = 1.0) -> str:
+    """【PyQGIS 原生】DEM 地形特征提取 (hillshade/山体阴影, slope/坡度, aspect/坡向, TRI/崎岖度)。"""
     try:
         layer = get_layer_by_name(layer_name, "raster")
-        dem_analysis(layer.source(), analysis_type, z_factor)
-        return f"地形分析 [{analysis_type}] 执行完成并已加载。"
+        time_str = datetime.now().strftime("%H%M%S")
+        out_tif = os.path.join(tempfile.gettempdir(), f"dem_{analysis_type}_{time_str}.tif")
+        opt_type = analysis_type.lower().strip()
+
+        if opt_type in ("hillshade", "阴影", "山体阴影"):
+            gdal.DEMProcessing(out_tif, layer.source(), "hillshade", zFactor=z_factor)
+            display_name = f"{layer_name}_山体阴影"
+        elif opt_type in ("slope", "坡度"):
+            gdal.DEMProcessing(out_tif, layer.source(), "slope", zFactor=z_factor)
+            display_name = f"{layer_name}_坡度分析(度)"
+        elif opt_type in ("aspect", "坡向"):
+            gdal.DEMProcessing(out_tif, layer.source(), "aspect")
+            display_name = f"{layer_name}_坡向分析"
+        elif opt_type in ("tri", "崎岖度", "地形崎岖度"):
+            gdal.DEMProcessing(out_tif, layer.source(), "TRI")
+            display_name = f"{layer_name}_地形崎岖度(TRI)"
+        elif opt_type in ("tpi", "地形位置指数"):
+            gdal.DEMProcessing(out_tif, layer.source(), "TPI")
+            display_name = f"{layer_name}_地形位置指数(TPI)"
+        elif opt_type in ("roughness", "粗糙度"):
+            gdal.DEMProcessing(out_tif, layer.source(), "roughness")
+            display_name = f"{layer_name}_粗糙度"
+        else:
+            gdal.DEMProcessing(out_tif, layer.source(), "hillshade", zFactor=z_factor)
+            display_name = f"{layer_name}_地形分析({analysis_type})"
+
+        lyr = QgsRasterLayer(out_tif, display_name, "gdal")
+        if lyr.isValid():
+            QgsProject.instance().addMapLayer(lyr)
+            if iface and iface.mapCanvas():
+                iface.mapCanvas().refresh()
+            return f"⛰️ **地形分析 [{analysis_type}] 处理完成**：已加载图层 `{display_name}`"
+        return "❌ 地形分析处理完成，但图层加载失败。"
     except Exception as e:
         return f"地形分析失败: {e}"
 
 
-def skill_spatial_filter(layer_name: str, filter_type: str, band_idx: int = 1) -> str:
-    """空间滤波 (sobel 边缘提取, gaussian 平滑, laplacian 锐化)。"""
+def skill_spatial_filter(layer_name: str, filter_type: str = "sobel", band_idx: int = 1) -> str:
+    """【PyQGIS 原生】空间卷积滤波 (sobel 边缘提取, gaussian 平滑, laplacian 锐化)。"""
     try:
+        from scipy.ndimage import sobel, gaussian_filter, laplace
+
         layer = get_layer_by_name(layer_name, "raster")
-        spatial_filter(layer.source(), filter_type, band_idx)
-        return f"空间滤波 [{filter_type}] 处理完成！"
+        ds = gdal.Open(layer.source())
+        if ds is None:
+            return f"❌ 无法打开栅格: {layer.source()}"
+
+        arr = ds.GetRasterBand(band_idx).ReadAsArray().astype(np.float32)
+        f_type = filter_type.lower()
+
+        if "sobel" in f_type or "边缘" in f_type:
+            sx = sobel(arr, axis=0)
+            sy = sobel(arr, axis=1)
+            filtered = np.hypot(sx, sy)
+            display_type = "Sobel边缘提取"
+        elif "gaussian" in f_type or "平滑" in f_type:
+            filtered = gaussian_filter(arr, sigma=1.5)
+            display_type = "高斯平滑"
+        elif "laplace" in f_type or "锐化" in f_type:
+            filtered = laplace(arr)
+            display_type = "拉普拉斯锐化"
+        else:
+            filtered = arr
+            display_type = filter_type
+
+        time_str = datetime.now().strftime("%H%M%S")
+        out_tif = os.path.join(tempfile.gettempdir(), f"filter_{time_str}.tif")
+
+        driver = gdal.GetDriverByName("GTiff")
+        out_ds = driver.Create(out_tif, arr.shape[1], arr.shape[0], 1, gdal.GDT_Float32)
+        out_ds.SetGeoTransform(ds.GetGeoTransform())
+        out_ds.SetProjection(ds.GetProjection())
+        out_ds.GetRasterBand(1).WriteArray(filtered)
+        out_ds.FlushCache()
+        out_ds = None
+        ds = None
+
+        layer_title = f"{layer_name}_{display_type}"
+        lyr = QgsRasterLayer(out_tif, layer_title, "gdal")
+        if lyr.isValid():
+            QgsProject.instance().addMapLayer(lyr)
+            if iface and iface.mapCanvas():
+                iface.mapCanvas().refresh()
+            return f"✨ **空间滤波 [{display_type}] 处理完成**：已加载图层 `{layer_title}`"
+        return "❌ 滤波图层构建失败。"
     except Exception as e:
         return f"空间滤波失败: {e}"
 
 
 def skill_area_statistics(layer_name: str) -> str:
-    """统计分类图层面积与占比（同时支持栅格分类与矢量图斑）。"""
+    """【PyQGIS 原生】统计分类图层面积与占比（原生支持矢量图斑与栅格像元统计）。"""
     try:
         layers = QgsProject.instance().mapLayersByName(layer_name)
         if not layers:
             raise ValueError(f"找不到图层: '{layer_name}'")
         layer = layers[0]
 
+        # 1. 矢量图层面积统计
         if isinstance(layer, QgsVectorLayer):
             total_area_m2 = sum(f.geometry().area() for f in layer.getFeatures() if f.hasGeometry())
             total_count = layer.featureCount()
             area_mu = total_area_m2 / 666.6667
             area_sqkm = total_area_m2 / 1_000_000
             return (
-                f"📊 矢量图层 `{layer_name}` 面积统计：\n"
-                f"- 要素总数: {total_count} 个图斑\n"
-                f"- 总面积: {total_area_m2:,.2f} ㎡ ({area_mu:,.2f} 亩 / {area_sqkm:.4f} k㎡)"
+                f"📊 **矢量图层 `{layer_name}` 面积统计**：\n"
+                f"- 要素总数: `{total_count}` 个图斑\n"
+                f"- 累计总面积: `{total_area_m2:,.2f} ㎡` (`{area_mu:,.2f} 亩` / `{area_sqkm:.4f} k㎡`)"
             )
 
-        stats = area_statistics(layer.source())
-        report = [f"📊 栅格图层 `{layer_name}` 像元分类面积统计："]
-        for s in stats:
+        # 2. 栅格分类面积统计
+        ds = gdal.Open(layer.source())
+        if ds is None:
+            return f"❌ 无法读取栅格数据: {layer.source()}"
+
+        gt = ds.GetGeoTransform()
+        res_x = abs(gt[1])
+        res_y = abs(gt[5])
+
+        # 经纬度投影坐标换算
+        srs = osr.SpatialReference(wkt=ds.GetProjection())
+        if srs.IsGeographic():
+            res_x *= 111320.0
+            res_y *= 111320.0
+
+        pixel_area_m2 = res_x * res_y
+        band = ds.GetRasterBand(1)
+        arr = band.ReadAsArray()
+        nodata = band.GetNoDataValue()
+
+        valid_mask = (arr != nodata) if nodata is not None else np.ones_like(arr, dtype=bool)
+        unique, counts = np.unique(arr[valid_mask], return_counts=True)
+        total_pixels = sum(counts)
+
+        report = [f"📊 **栅格图层 `{layer_name}` 像元分类面积统计**："]
+        for val, cnt in zip(unique, counts):
+            area_m2 = float(cnt * pixel_area_m2)
+            area_mu = area_m2 / 666.6667
+            pct = (cnt / total_pixels) * 100.0 if total_pixels > 0 else 0.0
             report.append(
-                f"- 类别 {s['class_id']}: {s['pixels']} 个像元，约 {s['area_m2']:,.2f} ㎡ ({s['area_mu']:,.2f} 亩，占比 {s.get('percent', 0):.1f}%)"
+                f"- **类别 {int(val)}**: `{int(cnt):,}` 个像元 | `{area_m2:,.2f} ㎡` (`{area_mu:,.2f} 亩`, 占比 `{pct:.1f}%`)"
             )
+        ds = None
         return "\n".join(report)
     except Exception as e:
         return f"面积统计失败: {e}"
 
 
 def skill_vector_smooth(layer_name: str, tolerance: float = 1.0, iterations: int = 2) -> str:
-    """矢量边界平滑与化简。"""
+    """【PyQGIS 原生】矢量边界平滑、化简与去锯齿。"""
     try:
         layer = get_layer_by_name(layer_name, "vector")
-        out_layer = vector_simplify_and_smooth(layer, tolerance, iterations)
-        out_layer.setName(f"{layer.name()}_平滑")
-        QgsProject.instance().addMapLayer(out_layer)
-        return f"矢量图层 `{layer_name}` 边界平滑去锯齿完成。"
+
+        # 使用 QGIS 原生平滑算法
+        import processing
+        params = {
+            'INPUT': layer,
+            'ITERATIONS': iterations,
+            'OFFSET': 0.25,
+            'MAX_ANGLE': 180,
+            'OUTPUT': 'memory:'
+        }
+        res = processing.run("native:smoothgeometry", params)
+        smoothed_layer = res['OUTPUT']
+
+        smoothed_layer.setName(f"{layer.name()}_平滑")
+        QgsProject.instance().addMapLayer(smoothed_layer)
+        if iface and iface.mapCanvas():
+            iface.mapCanvas().refresh()
+
+        return f"📐 **矢量图层 `{layer_name}` 边界平滑去锯齿完成**：已生成内存图层 `{smoothed_layer.name()}` (迭代次数: {iterations})。"
     except Exception as e:
         return f"矢量平滑失败: {e}"
 
 
 def skill_kmeans_cluster(layer_name: str, k: int = 5, max_iters: int = 15) -> str:
-    """K-Means 聚类。"""
+    """【PyQGIS 原生】多波段 K-Means 无监督聚类。"""
     try:
         layer = get_layer_by_name(layer_name, "raster")
-        kmeans_cluster(layer.source(), k, max_iters)
-        return f"K-Means (K={k}) 智能聚类完成。"
+        ds = gdal.Open(layer.source())
+        if ds is None:
+            return f"❌ 无法打开栅格: {layer.source()}"
+
+        bands_data = [ds.GetRasterBand(i + 1).ReadAsArray().astype(np.float32) for i in range(ds.RasterCount)]
+        h, w = bands_data[0].shape
+        X = np.stack([b.flatten() for b in bands_data], axis=1)
+
+        # 随机中心点初始化
+        np.random.seed(42)
+        valid_idx = np.random.choice(X.shape[0], k, replace=False)
+        centers = X[valid_idx]
+
+        labels = np.zeros(X.shape[0], dtype=np.int32)
+        for _ in range(max_iters):
+            dists = np.linalg.norm(X[:, np.newaxis] - centers, axis=2)
+            new_labels = np.argmin(dists, axis=1)
+            if np.all(labels == new_labels):
+                break
+            labels = new_labels
+            for c in range(k):
+                mask = (labels == c)
+                if np.any(mask):
+                    centers[c] = np.mean(X[mask], axis=0)
+
+        clustered = labels.reshape((h, w)).astype(np.uint8)
+
+        time_str = datetime.now().strftime("%H%M%S")
+        out_tif = os.path.join(tempfile.gettempdir(), f"kmeans_k{k}_{time_str}.tif")
+
+        driver = gdal.GetDriverByName("GTiff")
+        out_ds = driver.Create(out_tif, w, h, 1, gdal.GDT_Byte)
+        out_ds.SetGeoTransform(ds.GetGeoTransform())
+        out_ds.SetProjection(ds.GetProjection())
+        out_ds.GetRasterBand(1).WriteArray(clustered)
+        out_ds.FlushCache()
+        out_ds = None
+        ds = None
+
+        out_name = f"{layer_name}_KMeans聚类(K={k})"
+        lyr = QgsRasterLayer(out_tif, out_name, "gdal")
+        if lyr.isValid():
+            QgsProject.instance().addMapLayer(lyr)
+            if iface and iface.mapCanvas():
+                iface.mapCanvas().refresh()
+            return f"🧩 **K-Means 智能聚类完成**：已生成 {k} 个地物聚类图层 `{out_name}`"
+        return "❌ 聚类结果加载失败。"
     except Exception as e:
         return f"K-Means 失败: {e}"
 
 
 def skill_raster_diff(layer_t1: str, layer_t2: str, threshold: float = 30.0, polygonize: bool = True) -> str:
-    """像元级差分变化检测。"""
+    """【PyQGIS 原生】双期影像像元级绝对差分变化检测。"""
     try:
         l1 = get_layer_by_name(layer_t1, "raster")
         l2 = get_layer_by_name(layer_t2, "raster")
-        raster_diff(l1.source(), l2.source(), band_idx=1, threshold=threshold, polygonize=polygonize)
-        return "双期影像差分变化检测完成，变化掩膜已生成。"
+
+        d1 = gdal.Open(l1.source())
+        d2 = gdal.Open(l2.source())
+        if not d1 or not d2:
+            return "❌ 无法打开双期影像文件。"
+
+        a1 = d1.GetRasterBand(1).ReadAsArray().astype(np.float32)
+        a2 = d2.GetRasterBand(1).ReadAsArray().astype(np.float32)
+
+        if a1.shape != a2.shape:
+            return f"❌ 双期影像尺寸不一致：T1 为 {a1.shape}，T2 为 {a2.shape}，无法直接差分。"
+
+        diff = np.abs(a1 - a2)
+        mask = (diff >= threshold).astype(np.uint8)
+
+        time_str = datetime.now().strftime("%H%M%S")
+        out_tif = os.path.join(tempfile.gettempdir(), f"diff_mask_{time_str}.tif")
+
+        driver = gdal.GetDriverByName("GTiff")
+        out_ds = driver.Create(out_tif, a1.shape[1], a1.shape[0], 1, gdal.GDT_Byte)
+        out_ds.SetGeoTransform(d1.GetGeoTransform())
+        out_ds.SetProjection(d1.GetProjection())
+        band = out_ds.GetRasterBand(1)
+        band.WriteArray(mask)
+        band.SetNoDataValue(0)
+        out_ds.FlushCache()
+        out_ds = None
+        d1 = None
+        d2 = None
+
+        diff_layer_name = f"双期差分变化掩膜(阈值{threshold})"
+        lyr = QgsRasterLayer(out_tif, diff_layer_name, "gdal")
+        if lyr.isValid():
+            QgsProject.instance().addMapLayer(lyr)
+
+        poly_msg = ""
+        if polygonize:
+            poly_msg = "\n" + skill_raster_polygonize(diff_layer_name, sieve_size=4)
+
+        if iface and iface.mapCanvas():
+            iface.mapCanvas().refresh()
+
+        return f"🔄 **双期影像差分变化检测完成**：已生成变化掩膜图层 `{diff_layer_name}`{poly_msg}"
     except Exception as e:
         return f"差分检测失败: {e}"
 
 
 def skill_image_enhance(layer_name: str, r: int = 4, g: int = 3, b: int = 2) -> str:
-    """假彩色合成与画质增强。"""
+    """【PyQGIS 原生】多波段假彩色合成与 2% 线性拉伸增强。"""
     try:
         layer = get_layer_by_name(layer_name, "raster")
-        image_enhance(layer.source(), r, g, b, stretch=True)
-        return f"基于波段 ({r},{g},{b}) 的画质增强与彩色合成已完成。"
+        ds = gdal.Open(layer.source())
+        if ds is None:
+            return f"❌ 无法打开栅格: {layer.source()}"
+
+        max_b = ds.RasterCount
+        if max(r, g, b) > max_b:
+            return f"❌ 波段索引越界：栅格仅包含 {max_b} 个波段，无法以 ({r},{g},{b}) 组合合成。"
+
+        bands = [ds.GetRasterBand(b_idx).ReadAsArray().astype(np.float32) for b_idx in (r, g, b)]
+        enhanced_bands = []
+
+        for arr in bands:
+            p2, p98 = np.percentile(arr, (2, 98))
+            if p98 > p2:
+                arr = (arr - p2) / (p98 - p2) * 255.0
+            arr = np.clip(arr, 0, 255)
+            enhanced_bands.append(arr.astype(np.uint8))
+
+        time_str = datetime.now().strftime("%H%M%S")
+        out_tif = os.path.join(tempfile.gettempdir(), f"enhance_{r}_{g}_{b}_{time_str}.tif")
+
+        driver = gdal.GetDriverByName("GTiff")
+        h, w = enhanced_bands[0].shape
+        out_ds = driver.Create(out_tif, w, h, 3, gdal.GDT_Byte)
+        out_ds.SetGeoTransform(ds.GetGeoTransform())
+        out_ds.SetProjection(ds.GetProjection())
+
+        for i in range(3):
+            out_ds.GetRasterBand(i + 1).WriteArray(enhanced_bands[i])
+
+        out_ds.FlushCache()
+        out_ds = None
+        ds = None
+
+        out_title = f"{layer_name}_彩色增强({r},{g},{b})"
+        lyr = QgsRasterLayer(out_tif, out_title, "gdal")
+        if lyr.isValid():
+            QgsProject.instance().addMapLayer(lyr)
+            if iface and iface.mapCanvas():
+                iface.mapCanvas().refresh()
+            return f"🎨 **多波段假彩色合成与画质增强完成**：已加载图层 `{out_title}`"
+        return "❌ 增强图层生成失败。"
     except Exception as e:
         return f"画质增强失败: {e}"
 
 
 def skill_raster_polygonize(layer_name: str, sieve_size: int = 4) -> str:
-    """栅格转矢量多边形并过滤孤立碎斑。"""
+    """【PyQGIS 原生】二值/分类栅格矢量化为 Polygon 面要素，自动过滤碎斑。"""
     try:
         layer = get_layer_by_name(layer_name, "raster")
-        raster_polygonize(layer.source(), sieve_size)
-        return f"栅格 `{layer_name}` 已成功转换为矢量多边形图斑。"
+        src_ds = gdal.Open(layer.source())
+        if src_ds is None:
+            return f"❌ 无法打开栅格: {layer.source()}"
+
+        src_band = src_ds.GetRasterBand(1)
+        time_str = datetime.now().strftime("%H%M%S")
+        out_shp = os.path.join(tempfile.gettempdir(), f"poly_{time_str}.shp")
+
+        srs = osr.SpatialReference(wkt=src_ds.GetProjection())
+        drv = ogr.GetDriverByName("ESRI Shapefile")
+        if os.path.exists(out_shp):
+            drv.DeleteDataSource(out_shp)
+
+        dst_ds = drv.CreateDataSource(out_shp)
+        dst_layer = dst_ds.CreateLayer("polygonized", srs=srs, geom_type=ogr.wkbPolygon)
+
+        fd = ogr.FieldDefn("DN", ogr.OFTInteger)
+        dst_layer.CreateField(fd)
+
+        # GDAL 原生矢量化
+        gdal.Polygonize(src_band, None, dst_layer, 0, [], callback=None)
+
+        dst_ds.FlushCache()
+        dst_ds = None
+        src_ds = None
+
+        out_vec_name = f"{layer_name}_矢量化图斑"
+        vlayer = QgsVectorLayer(out_shp, out_vec_name, "ogr")
+        if vlayer.isValid():
+            # 过滤背景 (DN > 0)
+            vlayer.setSubsetString("DN > 0")
+            QgsProject.instance().addMapLayer(vlayer)
+            if iface and iface.mapCanvas():
+                iface.mapCanvas().refresh()
+            return f"📦 **栅格 `{layer_name}` 已成功转换为矢量多边形**：已加载图层 `{out_vec_name}` ({vlayer.featureCount()} 个图斑)。"
+        return "❌ 矢量化图层加载失败。"
     except Exception as e:
         return f"矢量化失败: {e}"
 
 
 # ===========================================================================
-# 4. 云端 AI 深度解译任务调度 (内置自动安全中心裁剪，永不被熔断拦截)
+# 4. 云端 AI 深度解译任务调度
 # ===========================================================================
 
 def _sanitize_ai_task_extent(layer: QgsRasterLayer, extent=None, extent_crs=None) -> Tuple[QgsRectangle, QgsCoordinateReferenceSystem]:
-    """
-    【AI 解译核心安全保护】
-    若传入范围过大（例如在线底图全视口或超大栅格），自动聚焦视口中心约 1.2km x 1.2km 安全范围，
-    将像元量控制在 2400x2400 以内，确保 AI 深度解译 100% 顺畅执行，绝不报错打断。
-    """
+    """提取解译区域范围。"""
     canvas = iface.mapCanvas() if iface else None
 
     if extent is None:
@@ -910,26 +1280,6 @@ def _sanitize_ai_task_extent(layer: QgsRasterLayer, extent=None, extent_crs=None
         extent_crs = canvas.mapSettings().destinationCrs() if canvas else layer.crs()
     if extent_crs is None:
         extent_crs = layer.crs()
-
-    # # 转换至 WGS84 检测真实地理跨度
-    # try:
-    #     wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
-    #     tr_to_wgs = QgsCoordinateTransform(extent_crs, wgs84, QgsProject.instance())
-    #     wgs_rect = tr_to_wgs.transformBoundingBox(extent)
-    #
-    #     # 0.015 度约合 1.5km x 1.5km
-    #     if wgs_rect.width() > 0.015 or wgs_rect.height() > 0.015 or _inspect_raster_profile(layer)["is_online_tile"]:
-    #         cx = wgs_rect.center().x()
-    #         cy = wgs_rect.center().y()
-    #         half = 0.006  # 约 1.2km 范围
-    #         safe_wgs = QgsRectangle(cx - half, cy - half, cx + half, cy + half)
-    #
-    #         tr_back = QgsCoordinateTransform(wgs84, extent_crs, QgsProject.instance())
-    #         safe_extent = tr_back.transformBoundingBox(safe_wgs)
-    #         logger.info("Extent too large for AI interpret, automatically centered to safe 1.2km working bbox.")
-    #         return safe_extent, extent_crs
-    # except Exception as e:
-    #     logger.warning(f"Sanitize extent failed: {e}")
 
     return extent, extent_crs
 
@@ -1045,7 +1395,7 @@ def _looks_like_layer_param(alg, param_name: str) -> bool:
 
 
 def qgis_run_algorithm(algorithm_id: str, parameters: dict) -> str:
-    """执行原生 QGIS 算法并自动加载结果（内置画布冻结与防卡死保护）。"""
+    """执行原生 QGIS 算法并自动加载结果。"""
     from qgis.core import QgsProcessingContext, QgsProcessingFeedback
 
     canvas = iface.mapCanvas() if iface else None
@@ -1228,10 +1578,9 @@ def skill_fetch_osm_vector_data(
 ) -> str:
     """
     通过 Overpass API 获取 OpenStreetMap 真实矢量 JSON 数据，并在 QGIS 中自动生成矢量图层。
-    范围统一限制在安全工作区内，防止 Overpass 超时。
     """
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=min(0.06, DEFAULT_MAX_SPAN))
+        bbox, located_msg = _get_target_bbox(place_name)
         min_lon, min_lat, max_lon, max_lat = bbox
 
         tag_filter = ""
@@ -1400,9 +1749,9 @@ def skill_fetch_landsat_imagery(
     days_back: int = 30,
     max_cloud: int = 20
 ) -> str:
-    """检索并流式加载 Landsat 8/9 C2-L2 30米多光谱卫星影像（自动限制在统一安全工作区）。"""
+    """检索并流式加载 Landsat 8/9 C2-L2 30米多光谱卫星影像。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
+        bbox, located_msg = _get_target_bbox(place_name)
         today = datetime.now()
         start_date = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
         end_date = today.strftime("%Y-%m-%d")
@@ -1477,10 +1826,9 @@ def skill_fetch_sentinel1_sar(
 ) -> str:
     """
     【在线遥感数据拉取】检索并流式加载 Sentinel-1 GRD 哨兵微波雷达影像 (SAR)。
-    自动限制在统一安全工作区内。
     """
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
+        bbox, located_msg = _get_target_bbox(place_name)
 
         today = datetime.now()
         if not date_end:
@@ -1554,7 +1902,7 @@ def skill_fetch_sentinel1_sar(
             if iface and iface.mapCanvas():
                 iface.mapCanvas().refresh()
             return (f"{located_msg}📡 **已成功流式加载 Sentinel-1 SAR 雷达影像**:`{layer_name}`\n"
-                    f"(不受云层影响,像元值为后向散射振幅,图层已裁剪至统一工作区范围)")
+                    f"(不受云层影响,像元值为后向散射振幅)")
 
         return f"{located_msg}Sentinel-1 SAR 影像加载失败:栅格图层无效。"
     except Exception as e:
@@ -1565,7 +1913,7 @@ def skill_fetch_sentinel1_sar(
 def skill_fetch_worldcover_lulc(place_name: str = "当前视口") -> str:
     """检索并流式挂载 ESA WorldCover 10米全球土地利用覆盖分类图。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
+        bbox, located_msg = _get_target_bbox(place_name)
         worldcover_vrt_url = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v100/2020/esa_worldcover_2020_10m.vrt"
         vsi_url = f"/vsicurl/{worldcover_vrt_url}"
 
@@ -1591,28 +1939,10 @@ def skill_fetch_worldcover_lulc(place_name: str = "当前视口") -> str:
         return f"获取 WorldCover 异常: {e}"
 
 
-def _snap_canvas_to_bbox(bbox: List[float]) -> None:
-    """
-    【公共辅助函数】把当前画布范围收紧到给定的 WGS84 bbox。
-    """
-    if not iface or not iface.mapCanvas():
-        return
-    try:
-        canvas = iface.mapCanvas()
-        src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
-        dest_crs = canvas.mapSettings().destinationCrs()
-        tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
-        rect = tr.transformBoundingBox(QgsRectangle(bbox[0], bbox[1], bbox[2], bbox[3]))
-        canvas.setExtent(rect)
-        canvas.refresh()
-    except Exception as e:
-        logger.warning(f"Snap canvas to bbox failed: {e}")
-
-
 def skill_fetch_worldpop_density(place_name: str = "当前视口", year: int = 2020) -> str:
     """加载 WorldPop 全球 100米 人口密度与空间分布栅格图层。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
+        _, located_msg = _get_target_bbox(place_name)
         wms_url = (
             "crs=EPSG:4326&dpiMode=7&format=image/png&layers=wp:pop_density_"
             f"{year}&styles=&url=https://hub.worldpop.org/geoserver/wms"
@@ -1621,8 +1951,7 @@ def skill_fetch_worldpop_density(place_name: str = "当前视口", year: int = 2
         layer = QgsRasterLayer(wms_url, layer_name, "wms")
         if layer.isValid():
             QgsProject.instance().addMapLayer(layer)
-            _snap_canvas_to_bbox(bbox)
-            return f"{located_msg}👥 **已成功加载 WorldPop 全球 100米 人口密度栅格图层**：`{layer_name}`\n📐 *视野已收紧至安全工作区范围。*"
+            return f"{located_msg}👥 **已成功加载 WorldPop 全球 100米 人口密度栅格图层**：`{layer_name}`"
         return f"{located_msg}WorldPop 人口数据服务连接异常。"
     except Exception as e:
         return f"获取 WorldPop 异常: {e}"
@@ -1631,7 +1960,7 @@ def skill_fetch_worldpop_density(place_name: str = "当前视口", year: int = 2
 def skill_fetch_nighttime_lights(place_name: str = "当前视口") -> str:
     """流式加载 NOAA VIIRS DNB 500米 全球夜间灯光辐射影像。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
+        _, located_msg = _get_target_bbox(place_name)
         wmts_url = (
             "crs=EPSG:4326&dpiMode=7&format=image/png&layers=VIIRS_SNPP_DayNightBand_ENCC"
             "&styles=default&url=https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/wmts.cgi"
@@ -1640,8 +1969,7 @@ def skill_fetch_nighttime_lights(place_name: str = "当前视口") -> str:
         layer = QgsRasterLayer(wmts_url, layer_name, "wms")
         if layer.isValid():
             QgsProject.instance().addMapLayer(layer)
-            _snap_canvas_to_bbox(bbox)
-            return f"{located_msg}🌃 **已成功加载 VIIRS 全球夜间灯光影像**：`{layer_name}`\n*(可用于分析城市化边界、经济活力与电力分布)*\n📐 *视野已收紧至安全工作区范围。*"
+            return f"{located_msg}🌃 **已成功加载 VIIRS 全球夜间灯光影像**：`{layer_name}`\n*(可用于分析城市化边界、经济活力与电力分布)*"
         return f"{located_msg}夜间灯光服务连接失败。"
     except Exception as e:
         return f"获取夜间灯光数据异常: {e}"
@@ -1650,7 +1978,7 @@ def skill_fetch_nighttime_lights(place_name: str = "当前视口") -> str:
 def skill_fetch_hydrology_data(place_name: str = "当前视口") -> str:
     """加载 HydroSHEDS 全球水文流域与河网等级矢量数据。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
+        _, located_msg = _get_target_bbox(place_name)
         wms_url = (
             "crs=EPSG:4326&dpiMode=7&format=image/png&layers=hydrosheds:hydro_rivers"
             "&styles=&url=https://hydrosheds.org/geoserver/wms"
@@ -1659,8 +1987,7 @@ def skill_fetch_hydrology_data(place_name: str = "当前视口") -> str:
         layer = QgsRasterLayer(wms_url, layer_name, "wms")
         if layer.isValid():
             QgsProject.instance().addMapLayer(layer)
-            _snap_canvas_to_bbox(bbox)
-            return f"{located_msg}💧 **已成功挂载 HydroSHEDS 全球河网与流域水文图层**：`{layer_name}`\n📐 *视野已收紧至安全工作区范围。*"
+            return f"{located_msg}💧 **已成功挂载 HydroSHEDS 全球河网与流域水文图层**：`{layer_name}`"
         return f"{located_msg}HydroSHEDS 水文服务连接异常。"
     except Exception as e:
         return f"获取水文数据异常: {e}"
@@ -1669,7 +1996,7 @@ def skill_fetch_hydrology_data(place_name: str = "当前视口") -> str:
 def skill_fetch_era5_climate(place_name: str = "当前视口", days_back: int = 7) -> str:
     """查询指定地点近期的 ERA5 气象历史再分析数据（气温、降雨量、风速、气压）。"""
     try:
-        bbox, _ = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
+        bbox, _ = _get_target_bbox(place_name)
         center_lon = (bbox[0] + bbox[2]) / 2
         center_lat = (bbox[1] + bbox[3]) / 2
 

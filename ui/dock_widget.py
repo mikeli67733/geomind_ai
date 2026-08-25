@@ -245,9 +245,7 @@ class ImageInterpretDockWidget(QDockWidget):
     # ------------------------------------------------------------------
     def _restore_dock_state(self):
         """Restore the last visited tool page after a QGIS restart."""
-        page_key = self.settings.value(SETTINGS_KEY_DOCK_PAGE, "")
-        if page_key and page_key in self.task_pages:
-            self.navigate_to_task(str(page_key))
+        self.show_copilot_page()
 
     def save_dock_state(self, visible: bool):
         """Persist current dock visibility and active page."""
