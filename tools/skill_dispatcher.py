@@ -911,25 +911,25 @@ def _sanitize_ai_task_extent(layer: QgsRasterLayer, extent=None, extent_crs=None
     if extent_crs is None:
         extent_crs = layer.crs()
 
-    # 转换至 WGS84 检测真实地理跨度
-    try:
-        wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
-        tr_to_wgs = QgsCoordinateTransform(extent_crs, wgs84, QgsProject.instance())
-        wgs_rect = tr_to_wgs.transformBoundingBox(extent)
-
-        # 0.015 度约合 1.5km x 1.5km
-        if wgs_rect.width() > 0.015 or wgs_rect.height() > 0.015 or _inspect_raster_profile(layer)["is_online_tile"]:
-            cx = wgs_rect.center().x()
-            cy = wgs_rect.center().y()
-            half = 0.006  # 约 1.2km 范围
-            safe_wgs = QgsRectangle(cx - half, cy - half, cx + half, cy + half)
-
-            tr_back = QgsCoordinateTransform(wgs84, extent_crs, QgsProject.instance())
-            safe_extent = tr_back.transformBoundingBox(safe_wgs)
-            logger.info("Extent too large for AI interpret, automatically centered to safe 1.2km working bbox.")
-            return safe_extent, extent_crs
-    except Exception as e:
-        logger.warning(f"Sanitize extent failed: {e}")
+    # # 转换至 WGS84 检测真实地理跨度
+    # try:
+    #     wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+    #     tr_to_wgs = QgsCoordinateTransform(extent_crs, wgs84, QgsProject.instance())
+    #     wgs_rect = tr_to_wgs.transformBoundingBox(extent)
+    #
+    #     # 0.015 度约合 1.5km x 1.5km
+    #     if wgs_rect.width() > 0.015 or wgs_rect.height() > 0.015 or _inspect_raster_profile(layer)["is_online_tile"]:
+    #         cx = wgs_rect.center().x()
+    #         cy = wgs_rect.center().y()
+    #         half = 0.006  # 约 1.2km 范围
+    #         safe_wgs = QgsRectangle(cx - half, cy - half, cx + half, cy + half)
+    #
+    #         tr_back = QgsCoordinateTransform(wgs84, extent_crs, QgsProject.instance())
+    #         safe_extent = tr_back.transformBoundingBox(safe_wgs)
+    #         logger.info("Extent too large for AI interpret, automatically centered to safe 1.2km working bbox.")
+    #         return safe_extent, extent_crs
+    # except Exception as e:
+    #     logger.warning(f"Sanitize extent failed: {e}")
 
     return extent, extent_crs
 
