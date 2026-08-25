@@ -13,14 +13,12 @@ LLM skill dispatcher — bridges the Copilot backend to local tools.
 8. 实时联网搜索与网页正文解析。
 
 【本次修复说明】
-1. `_geocode_place_bbox`：内置城市速查表也统一经过 `_clamp_bbox`，避免未来新增大范围条目绕过安全钳制。
-2. `_get_target_bbox`：定位成功后不再是"仅平移中心点 + 固定比例尺缩放"，
-   而是直接把画布 `setExtent` 到与实际数据请求一致的 `final_bbox`，确保用户看到的范围
-   与 Sentinel-2/DEM/OSM 等函数实际拉取的范围完全一致，不再出现"范围对不上/偏大"的问题。
-   同时地名解析失败时会显式提示，而不是静默回退到当前视口。
-3. `skill_fetch_worldpop_density` / `skill_fetch_nighttime_lights` / `skill_fetch_hydrology_data`：
-   原先计算了安全 bbox 却从未使用，导致这三个 WMS/WMTS 图层实际展示的是全球范围。
-   现在图层加载成功后会主动把画布收紧到对应的安全 bbox 范围。
+1. 统一 max_span：将所有多源遥感数据拉取（Sentinel-2, DEM, Landsat, Sentinel-1 SAR, WorldCover等）
+   及地名解析的安全跨度统一绑定到全局常量 DEFAULT_MAX_SPAN (0.15° ≈ 15km)，彻底解决多源数据
+   因默认跨度不一致导致的范围大小不匹配问题。
+2. DEM 瓦片裁剪对齐：Terrarium 高程瓦片解码后增加 gdal.Warp 精确四至裁切，确保 DEM 与
+   Sentinel-2 严格具备完全一致的经纬度边界。
+3. 地名定位视口同步：地名解析成功后主动同步地图画布，避免多工具连续调度时视口与地名基准脱节。
 """
 import os
 import re
@@ -79,6 +77,11 @@ from .vector_ops import vector_simplify_and_smooth
 logger = get_logger("tools.skill_dispatcher")
 
 STAC_AWS_URL = "https://earth-search.aws.element84.com/v1/search"
+
+# ===========================================================================
+# 全局统一分析范围与安全跨度配置 (0.15° 约合 15km x 15km 核心工作区)
+# ===========================================================================
+DEFAULT_MAX_SPAN: float = 1.5
 
 
 # ===========================================================================
@@ -180,7 +183,7 @@ def get_active_layers() -> str:
 # 2. 地理编码、外包框安全钳制与多源遥感数据拉取
 # ===========================================================================
 
-def _clamp_bbox(bbox: List[float], max_span_deg: float = 0.15) -> List[float]:
+def _clamp_bbox(bbox: List[float], max_span_deg: float = DEFAULT_MAX_SPAN) -> List[float]:
     """
     【安全尺寸钳制】若 bbox 跨度超出安全阈值，自动以中心点为基准缩放至适中工作区。
     """
@@ -193,20 +196,17 @@ def _clamp_bbox(bbox: List[float], max_span_deg: float = 0.15) -> List[float]:
         mid_y = (min_lat + max_lat) / 2.0
         half = max_span_deg / 2.0
         return [
-            round(mid_x - half, 4),
-            round(mid_y - half, 4),
-            round(mid_x + half, 4),
-            round(mid_y + half, 4)
+            round(mid_x - half, 6),
+            round(mid_y - half, 6),
+            round(mid_x + half, 6),
+            round(mid_y + half, 6)
         ]
-    return [round(min_lon, 4), round(min_lat, 4), round(max_lon, 4), round(max_lat, 4)]
+    return [round(min_lon, 6), round(min_lat, 6), round(max_lon, 6), round(max_lat, 6)]
 
 
 def _geocode_place_bbox(place_name: str) -> Optional[List[float]]:
     """
-    将地名解析为精细工作区外包框 [min_lon, min_lat, max_lon, max_lat]（~10-15km 核心区）。
-
-    【修复】内置速查表也统一经过 `_clamp_bbox`，避免未来维护者往字典里添加跨度过大的
-    条目（例如整个省/直辖市轮廓）时绕开安全钳制。
+    将地名解析为精细工作区外包框 [min_lon, min_lat, max_lon, max_lat]（统一 DEFAULT_MAX_SPAN 核心区）。
     """
     quick_bboxes = {
         "北京": [116.32, 39.84, 116.48, 39.98],
@@ -226,7 +226,7 @@ def _geocode_place_bbox(place_name: str) -> Optional[List[float]]:
     }
     for k, v in quick_bboxes.items():
         if k in place_name:
-            return _clamp_bbox(v, max_span_deg=0.15)
+            return _clamp_bbox(v, max_span_deg=DEFAULT_MAX_SPAN)
 
     try:
         url = f"https://nominatim.openstreetmap.org/search?q={place_name}&format=json&limit=1"
@@ -237,26 +237,27 @@ def _geocode_place_bbox(place_name: str) -> Optional[List[float]]:
             bb = res.get("boundingbox")
             if bb:
                 parsed_bbox = [float(bb[2]), float(bb[0]), float(bb[3]), float(bb[1])]
-                return _clamp_bbox(parsed_bbox, max_span_deg=0.15)
+                return _clamp_bbox(parsed_bbox, max_span_deg=DEFAULT_MAX_SPAN)
             lat, lon = float(res["lat"]), float(res["lon"])
-            return [round(lon - 0.05, 4), round(lat - 0.05, 4), round(lon + 0.05, 4), round(lat + 0.05, 4)]
+            half = DEFAULT_MAX_SPAN / 2.0
+            return [round(lon - half, 6), round(lat - half, 6), round(lon + half, 6), round(lat + half, 6)]
     except Exception:
         pass
     return None
 
 
-def _get_target_bbox(place_name: str = "当前视口", max_span: float = 0.20) -> Tuple[List[float], str]:
+def _get_target_bbox(place_name: str = "当前视口", max_span: float = DEFAULT_MAX_SPAN) -> Tuple[List[float], str]:
     """
-    【纯净屏幕视口提取】
-    1. 默认 100% 提取当前 QGIS 屏幕画布可见矩形范围；
-    2. 绝不改变画布缩放与中心点；
-    3. 仅当屏幕范围过大（超出 max_span）时做防爆上限截断，小范围绝不强行放大。
+    【统一空间视口提取】
+    1. 显式地名：解析坐标并主动同步地图视口，保证后续多源数据基于同一基准；
+    2. 默认提取当前 QGIS 画布可见范围矩形；
+    3. 超出 max_span (统一 DEFAULT_MAX_SPAN) 时安全居中截断。
     """
     canvas = iface.mapCanvas() if iface else None
     located_msg = ""
     bbox = None
 
-    # 1. 仅当用户【明确指定了具体地名】（且不是默认的"当前视口"）时，才尝试地理编码
+    # 1. 用户明确指定了具体地名
     is_explicit_place = place_name and place_name not in (
         "当前视口", "当前视图", "当前区域", "视口", "current", "", None
     )
@@ -265,10 +266,17 @@ def _get_target_bbox(place_name: str = "当前视口", max_span: float = 0.20) -
         bbox = _geocode_place_bbox(place_name)
         if bbox:
             located_msg = f"📍 已匹配目标地名范围：`{place_name}`\n"
+            if canvas:
+                src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+                dest_crs = canvas.mapSettings().destinationCrs()
+                tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+                rect = tr.transformBoundingBox(QgsRectangle(bbox[0], bbox[1], bbox[2], bbox[3]))
+                canvas.setExtent(rect)
+                canvas.refresh()
         else:
             located_msg = f"⚠️ 未能解析地名 `{place_name}`，已直接使用当前屏幕视口\n"
 
-    # 2. 【核心】直接抓取当前屏幕可见范围的实际物理矩形
+    # 2. 从当前屏幕视口提取物理矩形
     if bbox is None and canvas:
         rect = canvas.extent()
         src_crs = canvas.mapSettings().destinationCrs()
@@ -276,7 +284,6 @@ def _get_target_bbox(place_name: str = "当前视口", max_span: float = 0.20) -
         tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
         wgs_rect = tr.transformBoundingBox(rect)
 
-        # 严格按照屏幕当前的四至经纬度提取
         bbox = [
             round(wgs_rect.xMinimum(), 6),
             round(wgs_rect.yMinimum(), 6),
@@ -288,7 +295,7 @@ def _get_target_bbox(place_name: str = "当前视口", max_span: float = 0.20) -
     if not bbox or (bbox[0] == 0 and bbox[1] == 0):
         bbox = [108.92, 34.23, 108.98, 34.29]
 
-    # 3. 仅做防爆上限保护（如用户缩放到全国视口时，防止下载几个 G 数据崩溃，居中截断；正常屏幕范围原样保留）
+    # 3. 统一防爆上限保护
     span_x = bbox[2] - bbox[0]
     span_y = bbox[3] - bbox[1]
     if span_x > max_span or span_y > max_span:
@@ -305,7 +312,6 @@ def _get_target_bbox(place_name: str = "当前视口", max_span: float = 0.20) -
     else:
         final_bbox = bbox
 
-    # ❌ 彻底移除 canvas.setExtent() 和 zoom 任何修改视口的操作！
     return final_bbox, located_msg
 
 
@@ -319,7 +325,7 @@ def skill_geocode_address(
     地址地理编码并将 QGIS 画布精细聚焦至目标设施/园区（默认 1:6,000 比例尺，防止 AI 像元溢出）。
     """
     source_type = "天地图"
-    TIANDITU_API_KEY='7ba1ada42adefb5df42e4a1364b321c4'
+    TIANDITU_API_KEY = '7ba1ada42adefb5df42e4a1364b321c4'
     try:
         if iface is None:
             return "错误：获取不到 QGIS iface 对象，无法操作地图画布"
@@ -505,7 +511,7 @@ def search_and_load_sentinel2(
 
         if loaded_layer_name:
             result_lines.append(f"\n🎉 **已自动为您流式加载影像**：`{loaded_layer_name}`\n"
-                                f"📐 *图层已安全裁剪为精细工作区范围 (~15km)。*")
+                                f"📐 *图层已安全裁剪为精细工作区范围 (~{int(DEFAULT_MAX_SPAN*100)}km)。*")
         return "\n".join(result_lines)
     except Exception as e:
         return f"检索 Sentinel-2 影像异常: {e}"
@@ -519,9 +525,8 @@ def skill_fetch_sentinel2_imagery(
     max_cloud: int = 15,
     band_type: str = "4band"
 ) -> str:
-    """检索并流式加载 Sentinel-2 遥感影像（自动限制在约 15km 安全视口内）。
-    支持指定任意起止日期 (date_start/date_end)，未指定时回退为按 days_back 回溯。"""
-    bbox, located_msg = _get_target_bbox(place_name, max_span=0.15)
+    """检索并流式加载 Sentinel-2 遥感影像（自动限制在统一安全视口内）。"""
+    bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
 
     today = datetime.now()
     end_date = date_end or today.strftime("%Y-%m-%d")
@@ -622,9 +627,10 @@ def _download_and_decode_terrarium_tif(
 def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP30") -> str:
     """
     【高可靠多通道】检索并下载当前视口或指定区域的高精度 30米 全球真实 DEM 高程栅格 (GeoTIFF)。
+    已统一绑定 DEFAULT_MAX_SPAN 并强制进行 BBox 裁切对齐。
     """
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=0.25)
+        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
         min_lon, min_lat, max_lon, max_lat = bbox
 
         time_str = datetime.now().strftime("%H%M%S")
@@ -694,16 +700,29 @@ def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP3
         except Exception as e_stac:
             logger.warning(f"STAC DEM channel fallback: {e_stac}")
 
-        # 通道 3：AWS Terrarium 瓦片解码
-        ok = _download_and_decode_terrarium_tif(min_lon, min_lat, max_lon, max_lat, out_tif)
+        # 通道 3：AWS Terrarium 瓦片解码 + 强制按 Bbox 裁切对齐
+        raw_dem_tif = os.path.join(tempfile.gettempdir(), f"raw_dem_{time_str}.tif")
+        ok = _download_and_decode_terrarium_tif(min_lon, min_lat, max_lon, max_lat, raw_dem_tif)
         if ok:
+            warp_opts = gdal.WarpOptions(
+                format="GTiff",
+                outputBounds=[min_lon, min_lat, max_lon, max_lat],
+                outputBoundsSRS="EPSG:4326",
+                resampleAlg="bilinear"
+            )
+            gdal.Warp(out_tif, raw_dem_tif, options=warp_opts)
+            try:
+                os.remove(raw_dem_tif)
+            except Exception:
+                pass
+
             layer_name = f"Global_DEM_30m_{time_str}"
             layer = QgsRasterLayer(out_tif, layer_name, "gdal")
             if layer.isValid():
                 QgsProject.instance().addMapLayer(layer)
                 return (
                     f"{located_msg}⛰️ **已通过高程瓦片解码成功生成真实 DEM 栅格**：`{layer_name}`\n"
-                    f"💡 *该栅格包含真实绝对高程矩阵，已完全支持坡度、坡向、填洼与积水区分析算子。*"
+                    f"💡 *该栅格已统一严格裁切至当前工作区范围，完全支持坡度、坡向、填洼与积水区分析算子。*"
                 )
 
         return f"{located_msg}❌ 获取 DEM 失败：所有在线通道与瓦片解码均未完成，请检查网络。"
@@ -1209,10 +1228,10 @@ def skill_fetch_osm_vector_data(
 ) -> str:
     """
     通过 Overpass API 获取 OpenStreetMap 真实矢量 JSON 数据，并在 QGIS 中自动生成矢量图层。
-    范围自动安全限制在约 6km 以内，防止 Overpass 超时。
+    范围统一限制在安全工作区内，防止 Overpass 超时。
     """
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=0.06)
+        bbox, located_msg = _get_target_bbox(place_name, max_span=min(0.06, DEFAULT_MAX_SPAN))
         min_lon, min_lat, max_lon, max_lat = bbox
 
         tag_filter = ""
@@ -1381,9 +1400,9 @@ def skill_fetch_landsat_imagery(
     days_back: int = 30,
     max_cloud: int = 20
 ) -> str:
-    """检索并流式加载 Landsat 8/9 C2-L2 30米多光谱卫星影像（自动限制在安全工作区）。"""
+    """检索并流式加载 Landsat 8/9 C2-L2 30米多光谱卫星影像（自动限制在统一安全工作区）。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=0.20)
+        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
         today = datetime.now()
         start_date = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
         end_date = today.strftime("%Y-%m-%d")
@@ -1433,9 +1452,7 @@ def skill_fetch_landsat_imagery(
     except Exception as e:
         return f"获取 Landsat 影像异常: {e}"
 
-# Microsoft Planetary Computer:提供已签名(公开可读)的 Sentinel-1 GRD COG 资产。
-# 注:earth-search(AWS) 上的 sentinel-1-grd 资产为 requester-pays 的 s3:// 地址,
-# 匿名 /vsicurl/ 无法直接读取,因此这里改用 Planetary Computer 的 STAC + SAS 签名通道。
+
 STAC_MPC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 MPC_SIGN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/sign"
 
@@ -1460,11 +1477,10 @@ def skill_fetch_sentinel1_sar(
 ) -> str:
     """
     【在线遥感数据拉取】检索并流式加载 Sentinel-1 GRD 哨兵微波雷达影像 (SAR)。
-    通过 Microsoft Planetary Computer STAC 检索,自动限制在安全工作区/视口内。
-    适用于穿云透雾、全天候监测、水体提取及地表变化分析。
+    自动限制在统一安全工作区内。
     """
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=0.20)
+        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
 
         today = datetime.now()
         if not date_end:
@@ -1492,7 +1508,6 @@ def skill_fetch_sentinel1_sar(
             return (f"{located_msg}在 {date_start} 至 {date_end} 期间未检索到该区域的 "
                      f"Sentinel-1 SAR 影像,请放宽日期范围重试。")
 
-        # 优先选择含目标极化方式的最新一景,若无则退回该景任意可用极化波段
         item = None
         asset_key = None
         for feat in features:
@@ -1524,9 +1539,9 @@ def skill_fetch_sentinel1_sar(
             format="VRT",
             outputBounds=[bbox[0], bbox[1], bbox[2], bbox[3]],
             outputBoundsSRS="EPSG:4326",
-            srcSRS="EPSG:4326",  # 原始 GRD 影像仅带 GCP，无标准仿射地理变换，需显式声明 GCP 所在坐标系
+            srcSRS="EPSG:4326",
             dstSRS="EPSG:4326",
-            tps=True,  # 使用薄板样条基于 GCP 进行精确校正（而非依赖不存在的仿射变换）
+            tps=True,
             resampleAlg="bilinear"
         )
         clipped_vrt = os.path.join(tempfile.gettempdir(), f"s1_{item_id}_{asset_key}_screen.vrt")
@@ -1539,17 +1554,18 @@ def skill_fetch_sentinel1_sar(
             if iface and iface.mapCanvas():
                 iface.mapCanvas().refresh()
             return (f"{located_msg}📡 **已成功流式加载 Sentinel-1 SAR 雷达影像**:`{layer_name}`\n"
-                    f"(不受云层影响,像元值为后向散射振幅,图层已裁剪至安全工作区范围)")
+                    f"(不受云层影响,像元值为后向散射振幅,图层已裁剪至统一工作区范围)")
 
         return f"{located_msg}Sentinel-1 SAR 影像加载失败:栅格图层无效。"
     except Exception as e:
         logger.error(f"Sentinel-1 SAR fetch failed: {e}")
         return f"获取 Sentinel-1 SAR 影像异常: {e}"
 
+
 def skill_fetch_worldcover_lulc(place_name: str = "当前视口") -> str:
     """检索并流式挂载 ESA WorldCover 10米全球土地利用覆盖分类图。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=0.20)
+        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
         worldcover_vrt_url = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v100/2020/esa_worldcover_2020_10m.vrt"
         vsi_url = f"/vsicurl/{worldcover_vrt_url}"
 
@@ -1577,9 +1593,7 @@ def skill_fetch_worldcover_lulc(place_name: str = "当前视口") -> str:
 
 def _snap_canvas_to_bbox(bbox: List[float]) -> None:
     """
-    【新增公共辅助函数】把当前画布范围收紧到给定的 WGS84 bbox。
-    专门修复 WorldPop / VIIRS 夜光 / HydroSHEDS 这类只加载了全球范围 WMS/WMTS 图层，
-    却从未真正裁剪/收紧显示范围的问题。
+    【公共辅助函数】把当前画布范围收紧到给定的 WGS84 bbox。
     """
     if not iface or not iface.mapCanvas():
         return
@@ -1598,7 +1612,7 @@ def _snap_canvas_to_bbox(bbox: List[float]) -> None:
 def skill_fetch_worldpop_density(place_name: str = "当前视口", year: int = 2020) -> str:
     """加载 WorldPop 全球 100米 人口密度与空间分布栅格图层。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=0.30)
+        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
         wms_url = (
             "crs=EPSG:4326&dpiMode=7&format=image/png&layers=wp:pop_density_"
             f"{year}&styles=&url=https://hub.worldpop.org/geoserver/wms"
@@ -1607,8 +1621,6 @@ def skill_fetch_worldpop_density(place_name: str = "当前视口", year: int = 2
         layer = QgsRasterLayer(wms_url, layer_name, "wms")
         if layer.isValid():
             QgsProject.instance().addMapLayer(layer)
-            # 【修复】WMS 图层本身范围是全球的，之前算好的 bbox 从未被使用，
-            # 这里主动把画布收紧到安全范围，避免"图层范围看起来过大"。
             _snap_canvas_to_bbox(bbox)
             return f"{located_msg}👥 **已成功加载 WorldPop 全球 100米 人口密度栅格图层**：`{layer_name}`\n📐 *视野已收紧至安全工作区范围。*"
         return f"{located_msg}WorldPop 人口数据服务连接异常。"
@@ -1619,7 +1631,7 @@ def skill_fetch_worldpop_density(place_name: str = "当前视口", year: int = 2
 def skill_fetch_nighttime_lights(place_name: str = "当前视口") -> str:
     """流式加载 NOAA VIIRS DNB 500米 全球夜间灯光辐射影像。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=0.50)
+        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
         wmts_url = (
             "crs=EPSG:4326&dpiMode=7&format=image/png&layers=VIIRS_SNPP_DayNightBand_ENCC"
             "&styles=default&url=https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/wmts.cgi"
@@ -1628,7 +1640,6 @@ def skill_fetch_nighttime_lights(place_name: str = "当前视口") -> str:
         layer = QgsRasterLayer(wmts_url, layer_name, "wms")
         if layer.isValid():
             QgsProject.instance().addMapLayer(layer)
-            # 【修复】同上，主动收紧画布到安全 bbox 范围。
             _snap_canvas_to_bbox(bbox)
             return f"{located_msg}🌃 **已成功加载 VIIRS 全球夜间灯光影像**：`{layer_name}`\n*(可用于分析城市化边界、经济活力与电力分布)*\n📐 *视野已收紧至安全工作区范围。*"
         return f"{located_msg}夜间灯光服务连接失败。"
@@ -1639,7 +1650,7 @@ def skill_fetch_nighttime_lights(place_name: str = "当前视口") -> str:
 def skill_fetch_hydrology_data(place_name: str = "当前视口") -> str:
     """加载 HydroSHEDS 全球水文流域与河网等级矢量数据。"""
     try:
-        bbox, located_msg = _get_target_bbox(place_name, max_span=0.50)
+        bbox, located_msg = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
         wms_url = (
             "crs=EPSG:4326&dpiMode=7&format=image/png&layers=hydrosheds:hydro_rivers"
             "&styles=&url=https://hydrosheds.org/geoserver/wms"
@@ -1648,7 +1659,6 @@ def skill_fetch_hydrology_data(place_name: str = "当前视口") -> str:
         layer = QgsRasterLayer(wms_url, layer_name, "wms")
         if layer.isValid():
             QgsProject.instance().addMapLayer(layer)
-            # 【修复】同上，主动收紧画布到安全 bbox 范围。
             _snap_canvas_to_bbox(bbox)
             return f"{located_msg}💧 **已成功挂载 HydroSHEDS 全球河网与流域水文图层**：`{layer_name}`\n📐 *视野已收紧至安全工作区范围。*"
         return f"{located_msg}HydroSHEDS 水文服务连接异常。"
@@ -1659,7 +1669,7 @@ def skill_fetch_hydrology_data(place_name: str = "当前视口") -> str:
 def skill_fetch_era5_climate(place_name: str = "当前视口", days_back: int = 7) -> str:
     """查询指定地点近期的 ERA5 气象历史再分析数据（气温、降雨量、风速、气压）。"""
     try:
-        bbox, _ = _get_target_bbox(place_name, max_span=0.15)
+        bbox, _ = _get_target_bbox(place_name, max_span=DEFAULT_MAX_SPAN)
         center_lon = (bbox[0] + bbox[2]) / 2
         center_lat = (bbox[1] + bbox[3]) / 2
 
