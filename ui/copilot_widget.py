@@ -34,7 +34,7 @@ from .theme import (
 # 内部技能函数名到人类友好提示文案的映射表
 SKILL_HUMAN_LABELS = {
     "get_active_layers": "读取当前图层列表与物理画像",
-    "skill_calc_spectral_index": "计算遥感物理光谱指数",
+    # "skill_calc_spectral_index": "计算遥感物理光谱指数",
     "skill_raster_threshold": "栅格指数阈值二值化提取",
     "skill_run_pca": "执行主成分分析 (PCA)",
     "skill_dem_analysis": "分析 DEM 地形要素",
@@ -234,11 +234,9 @@ class LlmCopilotWidget(QWidget):
             ("🗻 DEM 地形全要素分析", "task_dem"),
             ("🔎 空间滤波与边缘提取", "task_filter"),
             ("🍰 地物分类面积统计报表", "task_area"),
-            ("🎀 矢量图斑化简与平滑", "task_vector_smooth"),
             ("🍭 K-Means 智能无监督聚类", "task_kmeans"),
             ("🐣 双期像元差分变化检测", "task_raster_diff"),
             ("🌈 假彩色合成与画质增强", "task_enhance"),
-            ("🧩 栅格一键矢量化与过滤", "task_polygonize"),
         ]
         for title, key in free_tools:
             act = free_menu.addAction(title)

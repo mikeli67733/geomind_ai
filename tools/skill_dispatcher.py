@@ -96,7 +96,6 @@ def _inspect_raster_profile(layer: QgsRasterLayer) -> Dict[str, Any]:
         suggested_route = "【标准地物首选】skill_ai_extract_feature；特殊地物降级使用 SAM3 或 底图参考；【严禁计算物理光谱指数】"
     elif is_sentinel or (band_count >= 4 and 8.0 <= res_x <= 35.0):
         data_type = f"哨兵/中分辨率多光谱卫星 ({res_x:.1f}m 分辨率, {band_count}波段)"
-        suggested_route = "【首选光谱指数】skill_calc_spectral_index (如NDVI) + 阈值二值化；或常规地物模型"
     elif res_x < 0.35:
         data_type = f"无人机超高分辨率正射影像 ({res_x*100:.1f}cm 厘米级, {band_count}波段)"
         suggested_route = "【强制首选 SAM3 提示词模型】skill_ai_sam3_extract（地物模型易失效）"
@@ -358,9 +357,8 @@ def skill_geocode_address(
         canvas_point = transform.transform(QgsPointXY(lon, lat))
 
         canvas.setCenter(canvas_point)
-        canvas.zoomScale(zoom_scale)
         canvas.refresh()
-        return f"📍 地址定位完成：{address_text} (经度={lon:.6f}, 纬度={lat:.6f})，画布已聚焦 (1:{int(zoom_scale)})。"
+        return f"📍 地址定位完成：{address_text} (经度={lon:.6f}, 纬度={lat:.6f})。"
     except Exception as e:
         logger.error("Geocode failed: %s", e)
         return f"地址解析/定位失败: {e}"
@@ -371,10 +369,9 @@ def search_and_load_sentinel2(
     date_start: str = None,
     date_end: str = None,
     max_cloud_cover: int = 15,
-    auto_load_first: bool = True,
-    band_type: str = "4band"
+    auto_load_first: bool = True
 ) -> str:
-    """底层 AWS STAC 检索 + 按目标区域裁剪的虚拟 VRT 流式加载 Sentinel-2 影像。"""
+    """底层 AWS STAC 检索 + 按目标区域裁剪的虚拟 VRT 流式加载 Sentinel-2 全波段影像。"""
     today = datetime.now()
     if not date_end:
         date_end = today.strftime("%Y-%m-%d")
@@ -389,6 +386,22 @@ def search_and_load_sentinel2(
         "limit": 5,
         "sortby": [{"field": "properties.eo:cloud_cover", "direction": "asc"}]
     }
+
+    # 定义全波段顺序及兼容的 STAC Asset Key 别名
+    SENTINEL2_FULL_BANDS = [
+        ("B01", ["coastal", "B01", "b01"]),
+        ("B02", ["blue", "B02", "b02"]),
+        ("B03", ["green", "B03", "b03"]),
+        ("B04", ["red", "B04", "b04"]),
+        ("B05", ["rededge1", "B05", "b05"]),
+        ("B06", ["rededge2", "B06", "b06"]),
+        ("B07", ["rededge3", "B07", "b07"]),
+        ("B08", ["nir", "nir08", "B08", "b08"]),
+        ("B8A", ["nir09", "nir_narrow", "B8A", "b8a"]),
+        ("B09", ["wvp", "water_vapour", "B09", "b09"]),
+        ("B11", ["swir16", "swir1", "B11", "b11"]),
+        ("B12", ["swir22", "swir2", "B12", "b12"]),
+    ]
 
     try:
         resp = requests.post(STAC_AWS_URL, json=payload, timeout=15)
@@ -412,81 +425,80 @@ def search_and_load_sentinel2(
             result_lines.append(f"{i+1}. 拍摄日期: `{acq_time}` | 云量: `{cloud:.1f}%` | 景号: `{item_id}`")
 
             if i == 0 and auto_load_first:
-                layer = None
+                # 1. 匹配并按顺序提取所有波段的 URL
+                band_urls = []
+                matched_band_names = []
+                for band_name, aliases in SENTINEL2_FULL_BANDS:
+                    for alias in aliases:
+                        if alias in assets and "href" in assets[alias]:
+                            band_urls.append(f"/vsicurl/{assets[alias]['href']}")
+                            matched_band_names.append(band_name)
+                            break
+
+                if not band_urls:
+                    result_lines.append(f"⚠️ 无法在影像 `{item_id}` 中匹配到光谱波段资源。")
+                    continue
+
+                # 2. 通过 GDAL BuildVRT 合并全波段（separate=True 实现多波段堆叠）
+                raw_vrt = os.path.join(tempfile.gettempdir(), f"s2_{item_id}_full_raw.vrt")
+                gdal.BuildVRT(
+                    raw_vrt,
+                    band_urls,
+                    options=gdal.BuildVRTOptions(separate=True, resolution="highest")
+                )
+
+                # 3. 按目标区域裁剪
                 warp_options = gdal.WarpOptions(
                     format="VRT",
                     outputBounds=[extent_bbox[0], extent_bbox[1], extent_bbox[2], extent_bbox[3]],
                     outputBoundsSRS="EPSG:4326",
                     resampleAlg="bilinear"
                 )
+                clipped_vrt = os.path.join(tempfile.gettempdir(), f"s2_{item_id}_full_screen.vrt")
+                gdal.Warp(clipped_vrt, raw_vrt, options=warp_options)
 
-                if band_type in ("4band", "full") and all(k in assets for k in ("red", "green", "blue", "nir")):
-                    band_urls = [
-                        f"/vsicurl/{assets['red']['href']}",
-                        f"/vsicurl/{assets['green']['href']}",
-                        f"/vsicurl/{assets['blue']['href']}",
-                        f"/vsicurl/{assets['nir']['href']}",
-                    ]
-                    if band_type == "full" and "swir16" in assets and "swir22" in assets:
-                        band_urls.append(f"/vsicurl/{assets['swir16']['href']}")
-                        band_urls.append(f"/vsicurl/{assets['swir22']['href']}")
-                        band_desc = "6波段多光谱"
-                    else:
-                        band_desc = "4波段多光谱(含近红外)"
-
-                    raw_vrt = os.path.join(tempfile.gettempdir(), f"s2_{item_id}_raw.vrt")
-                    gdal.BuildVRT(raw_vrt, band_urls, options=gdal.BuildVRTOptions(separate=True))
-
-                    clipped_vrt = os.path.join(tempfile.gettempdir(), f"s2_{item_id}_screen.vrt")
-                    gdal.Warp(clipped_vrt, raw_vrt, options=warp_options)
-
-                    layer_name = f"Sentinel2_{acq_time}_{band_desc}_云量{cloud:.1f}%"
-                    layer = QgsRasterLayer(clipped_vrt, layer_name, "gdal")
-
-                if layer is None or not layer.isValid():
-                    visual_asset = assets.get("visual") or assets.get("overview")
-                    if visual_asset:
-                        clipped_vrt = os.path.join(tempfile.gettempdir(), f"s2_{item_id}_rgb_screen.vrt")
-                        gdal.Warp(clipped_vrt, f"/vsicurl/{visual_asset['href']}", options=warp_options)
-                        layer_name = f"Sentinel2_{acq_time}_真彩色_云量{cloud:.1f}%"
-                        layer = QgsRasterLayer(clipped_vrt, layer_name, "gdal")
+                # 4. 加载到 QGIS
+                layer_name = f"Sentinel2_{acq_time}_全波段({len(band_urls)}B)_云量{cloud:.1f}%"
+                layer = QgsRasterLayer(clipped_vrt, layer_name, "gdal")
 
                 if layer and layer.isValid():
                     QgsProject.instance().addMapLayer(layer)
                     loaded_layer_name = layer_name
-                    if iface and iface.mapCanvas():
+                    if 'iface' in globals() and iface and iface.mapCanvas():
                         iface.mapCanvas().refresh()
 
         if loaded_layer_name:
-            result_lines.append(f"\n🎉 **已自动为您流式加载影像**：`{loaded_layer_name}`")
+            result_lines.append(f"\n🎉 **已自动为您流式加载全波段影像**：`{loaded_layer_name}`")
         return "\n".join(result_lines)
     except Exception as e:
         return f"检索 Sentinel-2 影像异常: {e}"
 
-
 def skill_fetch_sentinel2_imagery(
-    place_name: str = "当前视口",
-    date_start: str = None,
-    date_end: str = None,
-    days_back: int = 14,
-    max_cloud: int = 15,
-    band_type: str = "4band"
+        place_name: str = "当前视口",
+        date_start: str = None,
+        date_end: str = None,
+        days_back: int = 14,
+        max_cloud: int = 15,
+        **kwargs  # 兼容吸收可能传入的 band_type 等历史参数，防止抛出 TypeError
 ) -> str:
-    """检索并流式加载 Sentinel-2 遥感影像。"""
+    """检索并流式加载 Sentinel-2 12波段全光谱遥感影像。"""
+    # 1. 解析目标区域坐标与定位提示信息
     bbox, located_msg = _get_target_bbox(place_name)
 
+    # 2. 解析起止日期
     today = datetime.now()
     end_date = date_end or today.strftime("%Y-%m-%d")
     start_date = date_start or (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
+    # 3. 调用底层全波段检索与 VRT 加载引擎
     result = search_and_load_sentinel2(
         extent_bbox=bbox,
         date_start=start_date,
         date_end=end_date,
         max_cloud_cover=max_cloud,
-        auto_load_first=True,
-        band_type=band_type
+        auto_load_first=True
     )
+
     return f"{located_msg}{result}"
 
 
@@ -681,120 +693,152 @@ def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP3
 # 3. 栅格与矢量基础算子调度
 # ===========================================================================
 
-def skill_calc_spectral_index(
-        layer_name: str,
-        index_type: str,
-        b1_idx: int,
-        b2_idx: int,
-        b3_idx: int = 1
-) -> str:
-    """
-    【PyQGIS 原生光谱指数计算引擎】直接在内存中计算多光谱物理指数并上屏渲染。
-
-    参数规则（以哨兵 1=Red, 2=Green, 3=Blue, 4=NIR 为例）：
-    - NDVI  (植被指数): b1_idx 为 Red(1), b2_idx 为 NIR(4)  -> 公式: (NIR - Red) / (NIR + Red)
-    - NDWI  (水体指数): b1_idx 为 Green(2), b2_idx 为 NIR(4) -> 公式: (Green - NIR) / (Green + NIR)
-    - MNDWI (修正水体): b1_idx 为 Green(2), b2_idx 为 SWIR    -> 公式: (Green - SWIR) / (Green + SWIR)
-    - GNDVI (绿度指数): b1_idx 为 Green(2), b2_idx 为 NIR(4) -> 公式: (NIR - Green) / (NIR + Green)
-    - NDBI  (建筑指数): b1_idx 为 NIR(4), b2_idx 为 SWIR     -> 公式: (SWIR - NIR) / (SWIR + NIR)
-    - EVI   (增强植被): b1_idx 为 Red(1), b2_idx 为 NIR(4), b3_idx 为 Blue(3)
-    """
-    try:
-        layer = get_layer_by_name(layer_name, "raster")
-        profile = _inspect_raster_profile(layer)
-        if profile["is_online_tile"]:
-            return f"❌ 错误：图层 `{layer_name}` 是在线 XYZ 瓦片（仅 RGB 图像），缺乏物理反射率，严禁计算物理光谱指数！"
-
-        # 1. 打开栅格并校验波段
-        ds = gdal.Open(layer.source())
-        if ds is None:
-            return f"❌ 无法打开栅格数据源: {layer.source()}"
-
-        max_b = ds.RasterCount
-        if b1_idx > max_b or b2_idx > max_b:
-            return f"❌ 波段索引越界：当前图层仅有 {max_b} 个波段，无法读取波段 {b1_idx} 或 {b2_idx}。"
-
-        b1 = ds.GetRasterBand(b1_idx).ReadAsArray().astype(np.float32)
-        b2 = ds.GetRasterBand(b2_idx).ReadAsArray().astype(np.float32)
-        b3 = ds.GetRasterBand(b3_idx).ReadAsArray().astype(np.float32) if (b3_idx <= max_b and b3_idx > 0) else None
-
-        idx_type = index_type.strip().upper()
-        eps = 1e-6
-
-        # 2. 原生标准物理公式解析（严格保证被减数与减数顺序正确）
-        with np.errstate(divide='ignore', invalid='ignore'):
-            if idx_type == "NDWI":
-                # 水体：(Green - NIR) / (Green + NIR)，水体为正高值（接近 +1）
-                denom = b1 + b2
-                result = np.where(np.abs(denom) < eps, 0.0, (b1 - b2) / (denom + eps))
-            elif idx_type == "NDVI":
-                # 植被：(NIR - Red) / (NIR + Red)，植被为正高值
-                denom = b2 + b1
-                result = np.where(np.abs(denom) < eps, 0.0, (b2 - b1) / (denom + eps))
-            elif idx_type == "MNDWI":
-                # 城镇水体：(Green - SWIR) / (Green + SWIR)
-                denom = b1 + b2
-                result = np.where(np.abs(denom) < eps, 0.0, (b1 - b2) / (denom + eps))
-            elif idx_type == "GNDVI":
-                # 绿度：(NIR - Green) / (NIR + Green)
-                denom = b2 + b1
-                result = np.where(np.abs(denom) < eps, 0.0, (b2 - b1) / (denom + eps))
-            elif idx_type == "NDBI":
-                # 建筑：(SWIR - NIR) / (SWIR + NIR)
-                denom = b2 + b1
-                result = np.where(np.abs(denom) < eps, 0.0, (b2 - b1) / (denom + eps))
-            elif idx_type == "EVI":
-                # EVI: 2.5 * (NIR - Red) / (NIR + 6*Red - 7.5*Blue + 1)
-                if b3 is None:
-                    return "❌ 计算 EVI 缺少蓝波段(b3_idx)。"
-                denom = b2 + 6.0 * b1 - 7.5 * b3 + 1.0
-                result = np.where(np.abs(denom) < eps, 0.0, 2.5 * (b2 - b1) / (denom + eps))
-            else:
-                # 兜底通用归一化
-                denom = b1 + b2
-                result = np.where(np.abs(denom) < eps, 0.0, (b1 - b2) / (denom + eps))
-
-            # 异常值截断与清洗
-            result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=-1.0)
-            if idx_type in ("NDVI", "NDWI", "MNDWI", "GNDVI", "NDBI"):
-                result = np.clip(result, -1.0, 1.0)
-
-        # 3. 将结果输出为 Float32 GeoTIFF
-        time_str = datetime.now().strftime("%H%M%S")
-        out_tif_path = os.path.join(tempfile.gettempdir(), f"{idx_type}_{time_str}.tif")
-
-        driver = gdal.GetDriverByName("GTiff")
-        h, w = result.shape
-        out_ds = driver.Create(out_tif_path, w, h, 1, gdal.GDT_Float32)
-        out_ds.SetGeoTransform(ds.GetGeoTransform())
-        out_ds.SetProjection(ds.GetProjection())
-
-        band = out_ds.GetRasterBand(1)
-        band.WriteArray(result)
-        band.SetNoDataValue(-9999.0)
-        band.FlushCache()
-        out_ds = None
-        ds = None
-
-        # 4. 加载到 QGIS 工程并设置默认图层名
-        out_layer_name = f"{idx_type}_结果"
-        new_layer = QgsRasterLayer(out_tif_path, out_layer_name, "gdal")
-
-        if not new_layer.isValid():
-            return f"❌ 指数生成完成，但加载至 QGIS 失败。"
-
-        QgsProject.instance().addMapLayer(new_layer)
-        if iface and iface.mapCanvas():
-            iface.mapCanvas().refresh()
-
-        return (
-            f"🎉 **光谱指数 [{idx_type}] 计算成功并已加载**：`{out_layer_name}`\n"
-            f"💡 *水体/目标像元理论值已正确映射在 (0, 1] 正区间，可直接调用 `skill_raster_threshold` 提取。*"
-        )
-
-    except Exception as e:
-        logger.error(f"Calculate spectral index error: {e}")
-        return f"光谱指数计算失败: {e}"
+# def skill_calc_spectral_index(
+#     layer_name: str,
+#     index_type: str,
+#     custom_bands: dict = None
+# ) -> str:
+#     """
+#     【PyQGIS 原生光谱指数计算引擎】
+#     基于 Sentinel-2 12个标准全波段顺序（或自定义映射）自动提取波段并计算物理光谱指数。
+#
+#     默认波段顺序映射（Sentinel-2 12-Band）：
+#     - Band 2: Blue (490nm)       | Band 3: Green (560nm)
+#     - Band 4: Red (665nm)        | Band 5: RedEdge1 (705nm)
+#     - Band 8: NIR (842nm)        | Band 11: SWIR1 (1610nm)
+#     - Band 12: SWIR2 (2190nm)
+#
+#     支持指数：
+#     - NDVI  (归一化植被): (NIR - Red) / (NIR + Red) -> (B8 - B4)
+#     - NDWI  (水体指数):   (Green - NIR) / (Green + NIR) -> (B3 - B8)
+#     - MNDWI (修正水体):   (Green - SWIR1) / (Green + SWIR1) -> (B3 - B11)
+#     - NDBI  (建筑物指数): (SWIR1 - NIR) / (SWIR1 + NIR) -> (B11 - B8)
+#     - GNDVI (绿度植被):   (NIR - Green) / (NIR + Green) -> (B8 - B3)
+#     - NDRE  (红边植被):   (NIR - RedEdge1) / (NIR + RedEdge1) -> (B8 - B5)
+#     - NBR   (燃烧痕迹):   (NIR - SWIR2) / (NIR + SWIR2) -> (B8 - B12)
+#     - EVI   (增强植被):   2.5 * (NIR - Red) / (NIR + 6*Red - 7.5*Blue + 1)
+#     """
+#     try:
+#         layer = get_layer_by_name(layer_name, "raster")
+#         profile = _inspect_raster_profile(layer)
+#         if profile["is_online_tile"]:
+#             return f"❌ 错误：图层 `{layer_name}` 是在线瓦片（RGB），无多光谱物理反射率，无法计算物理指数！"
+#
+#         # 1. 打开栅格
+#         ds = gdal.Open(layer.source())
+#         if ds is None:
+#             return f"❌ 无法打开栅格数据源: {layer.source()}"
+#
+#         max_b = ds.RasterCount
+#         idx_type = index_type.strip().upper()
+#
+#         # 2. 确定波段顺序映射（默认使用 12 波段全光谱顺序，1-based）
+#         default_bands = {
+#             "BLUE": 2,
+#             "GREEN": 3,
+#             "RED": 4,
+#             "RE1": 5,
+#             "NIR": 8,
+#             "SWIR1": 11,
+#             "SWIR2": 12
+#         }
+#         band_map = custom_bands if custom_bands else default_bands
+#
+#         def read_band(b_name):
+#             b_idx = band_map.get(b_name)
+#             if b_idx is None or b_idx > max_b or b_idx < 1:
+#                 raise ValueError(f"图层缺少计算所需的 {b_name} 波段（要求索引 {b_idx}，图层总波段数 {max_b}）")
+#             return ds.GetRasterBand(b_idx).ReadAsArray().astype(np.float32)
+#
+#         eps = 1e-6
+#
+#         # 3. 根据标准公式进行多波段矩阵计算
+#         with np.errstate(divide='ignore', invalid='ignore'):
+#             if idx_type == "NDVI":
+#                 nir, red = read_band("NIR"), read_band("RED")
+#                 denom = nir + red
+#                 result = np.where(np.abs(denom) < eps, 0.0, (nir - red) / (denom + eps))
+#
+#             elif idx_type == "NDWI":
+#                 green, nir = read_band("GREEN"), read_band("NIR")
+#                 denom = green + nir
+#                 result = np.where(np.abs(denom) < eps, 0.0, (green - nir) / (denom + eps))
+#
+#             elif idx_type == "MNDWI":
+#                 green, swir1 = read_band("GREEN"), read_band("SWIR1")
+#                 denom = green + swir1
+#                 result = np.where(np.abs(denom) < eps, 0.0, (green - swir1) / (denom + eps))
+#
+#             elif idx_type == "GNDVI":
+#                 nir, green = read_band("NIR"), read_band("GREEN")
+#                 denom = nir + green
+#                 result = np.where(np.abs(denom) < eps, 0.0, (nir - green) / (denom + eps))
+#
+#             elif idx_type == "NDBI":
+#                 swir1, nir = read_band("SWIR1"), read_band("NIR")
+#                 denom = swir1 + nir
+#                 result = np.where(np.abs(denom) < eps, 0.0, (swir1 - nir) / (denom + eps))
+#
+#             elif idx_type == "NDRE":
+#                 nir, re1 = read_band("NIR"), read_band("RE1")
+#                 denom = nir + re1
+#                 result = np.where(np.abs(denom) < eps, 0.0, (nir - re1) / (denom + eps))
+#
+#             elif idx_type == "NBR":
+#                 nir, swir2 = read_band("NIR"), read_band("SWIR2")
+#                 denom = nir + swir2
+#                 result = np.where(np.abs(denom) < eps, 0.0, (nir - swir2) / (denom + eps))
+#
+#             elif idx_type == "EVI":
+#                 nir, red, blue = read_band("NIR"), read_band("RED"), read_band("BLUE")
+#                 denom = nir + 6.0 * red - 7.5 * blue + 1.0
+#                 result = np.where(np.abs(denom) < eps, 0.0, 2.5 * (nir - red) / (denom + eps))
+#
+#             else:
+#                 return f"❌ 不支持的光谱指数类型: `{idx_type}`。支持列表: NDVI, NDWI, MNDWI, GNDVI, NDBI, NDRE, NBR, EVI。"
+#
+#             # 异常值清洗与归一化范围限制
+#             result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=-1.0)
+#             if idx_type in ("NDVI", "NDWI", "MNDWI", "GNDVI", "NDBI", "NDRE", "NBR"):
+#                 result = np.clip(result, -1.0, 1.0)
+#
+#         # 4. 输出为临时 Float32 GeoTIFF
+#         time_str = datetime.now().strftime("%H%M%S")
+#         out_tif_path = os.path.join(tempfile.gettempdir(), f"{idx_type}_{time_str}.tif")
+#
+#         driver = gdal.GetDriverByName("GTiff")
+#         h, w = result.shape
+#         out_ds = driver.Create(out_tif_path, w, h, 1, gdal.GDT_Float32)
+#         out_ds.SetGeoTransform(ds.GetGeoTransform())
+#         out_ds.SetProjection(ds.GetProjection())
+#
+#         band = out_ds.GetRasterBand(1)
+#         band.WriteArray(result)
+#         band.SetNoDataValue(-9999.0)
+#         band.FlushCache()
+#         out_ds = None
+#         ds = None
+#
+#         # 5. 加载至 QGIS 画布
+#         out_layer_name = f"{idx_type}_{layer_name}"
+#         new_layer = QgsRasterLayer(out_tif_path, out_layer_name, "gdal")
+#
+#         if not new_layer.isValid():
+#             return f"❌ 指数生成完成，但加载至 QGIS 失败。"
+#
+#         QgsProject.instance().addMapLayer(new_layer)
+#         if 'iface' in globals() and iface and iface.mapCanvas():
+#             iface.mapCanvas().refresh()
+#
+#         return (
+#             f"🎉 **光谱指数 [{idx_type}] 计算成功并已加载**：`{out_layer_name}`\n"
+#             f"💡 *目标地物高值区间通常映射在 (0, 1]，可直接调用阈值提取工具提取目标区域。*"
+#         )
+#
+#     except Exception as e:
+#         if 'logger' in globals():
+#             logger.error(f"Calculate spectral index error: {e}")
+#         return f"光谱指数计算失败: {e}"
 
 def skill_raster_threshold(layer_name: str, min_val: float, max_val: float = 1.0, band_idx: int = 1) -> str:
     """对栅格指数或 DEM 执行快速阈值二值化提取（生成 0/1 掩膜）。"""
