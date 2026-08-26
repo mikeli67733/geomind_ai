@@ -26,6 +26,8 @@ REMOTE_CONFIG_URLS: List[str] = [
 ]
 
 FALLBACK_SERVER_URL = "http://127.0.0.1:8000"
+FALLBACK_XIANYU_URL = "https://m.tb.cn/h.8SfKfsd?tk=u3XFgAMYbS2"
+XIANYU_PRODUCT_URL = FALLBACK_XIANYU_URL
 
 # ===========================================================================
 # AI model definitions

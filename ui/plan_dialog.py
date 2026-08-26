@@ -18,7 +18,7 @@ from ..core.constants import (
     CUSTOM_PLAN_CONTACT_TEXT, XIANYU_PRODUCT_URL,
 )
 from ..core.compat import ALIGN_CENTER, KEEP_ASPECT_RATIO, SMOOTH_TRANSFORMATION
-
+from ..core.config import settings
 
 class PlanDialog(QDialog):
     """Plan management and card-key redemption dialog."""
@@ -145,8 +145,9 @@ class PlanDialog(QDialog):
         return tab
 
     def _open_xianyu_url(self):
-        if XIANYU_PRODUCT_URL:
-            webbrowser.open(XIANYU_PRODUCT_URL)
+        url = settings.xianyu_url()  # <-- 动态获取 URL
+        if url:
+            webbrowser.open(url)
         else:
             QMessageBox.information(self, "提示", "暂未配置闲鱼购买链接，请联系管理员")
 

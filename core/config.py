@@ -7,20 +7,21 @@ Replaces the import-time side effects that previously lived in
 was imported). All tunable runtime values are now resolved lazily here,
 so loading the plugin never blocks on the network.
 
-Backend URL resolution chain (first hit wins):
-    1. user override in QSettings            (SETTINGS_KEY_SERVER_URL)
+Backend URL & Xianyu URL resolution chain (first hit wins):
+    1. user override in QSettings            (SETTINGS_KEY_SERVER_URL) [仅 server_url]
     2. local ``server_config.json``          (shipped with the plugin)
     3. remote config endpoint                (lazy fetch, cached in-process)
-    4. built-in fallback URL                 (FALLBACK_SERVER_URL)
+    4. built-in fallback URL                 (FALLBACK_SERVER_URL / FALLBACK_XIANYU_URL)
 """
 import json
 import os
 import threading
 import time
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from .constants import (
     FALLBACK_SERVER_URL,
+    FALLBACK_XIANYU_URL,
     REMOTE_CONFIG_URLS,
     SETTINGS_APP,
     SETTINGS_KEY_SERVER_URL,
@@ -42,8 +43,8 @@ def _plugin_dir() -> str:
     return _PLUGIN_DIR_CACHE
 
 
-def _fetch_remote_server_url() -> Optional[str]:
-    """Fetch the remote server URL with multi-source fallback.
+def _fetch_remote_config() -> Optional[Dict[str, Any]]:
+    """Fetch the remote config dict with multi-source fallback.
 
     Called lazily (never at import time) and only when no local source
     resolved the backend URL first.
@@ -55,13 +56,13 @@ def _fetch_remote_server_url() -> Optional[str]:
             cache_buster_url = f"{url}?_t={timestamp}"
             resp = requests.get(cache_buster_url, timeout=4)
             resp.raise_for_status()
-            server_url = resp.json().get("server_url")
-            if server_url:
-                return str(server_url).strip().rstrip("/") or None
+            data = resp.json()
+            if isinstance(data, dict):
+                return data
         except Exception as exc:
             logger.warning("Failed to fetch config from %s: %s", url, exc)
             continue
-    logger.warning("All remote config sources failed, using fallback URL")
+    logger.warning("All remote config sources failed, using fallback config")
     return None
 
 
@@ -70,7 +71,7 @@ class Settings:
 
     def __init__(self, plugin_dir: Optional[str] = None):
         self._plugin_dir = plugin_dir or _plugin_dir()
-        self._cached_remote_url: Optional[str] = None
+        self._cached_remote_config: Optional[Dict[str, Any]] = None
         self._remote_fetched = False
         self._lock = threading.Lock()
 
@@ -82,11 +83,26 @@ class Settings:
         override = self._user_override()
         if override:
             return override
-        local = self._local_file_url()
+        local = self._local_file_value("server_url")
         if local:
             return local
-        remote = self._remote_url(force_refresh=force_refresh)
-        return remote or FALLBACK_SERVER_URL
+        remote = self._remote_config(force_refresh=force_refresh).get("server_url")
+        if remote:
+            return str(remote).strip().rstrip("/")
+        return FALLBACK_SERVER_URL
+
+    # ------------------------------------------------------------------
+    # Xianyu URL resolution
+    # ------------------------------------------------------------------
+    def xianyu_url(self, force_refresh: bool = False) -> str:
+        """Return the effective Xianyu product purchase URL."""
+        local = self._local_file_value("xianyu_url")
+        if local:
+            return local
+        remote = self._remote_config(force_refresh=force_refresh).get("xianyu_url")
+        if remote:
+            return str(remote).strip()
+        return FALLBACK_XIANYU_URL
 
     def _user_override(self) -> Optional[str]:
         """QSettings override configured by the user in the settings page."""
@@ -98,30 +114,30 @@ class Settings:
         except Exception:
             return None
 
-    def _local_file_url(self) -> Optional[str]:
-        """Read ``server_config.json`` shipped in the plugin directory."""
+    def _local_file_value(self, key: str) -> Optional[str]:
+        """Read a specific key from ``server_config.json`` shipped in the plugin directory."""
         try:
             path = os.path.join(self._plugin_dir, "server_config.json")
             if not os.path.isfile(path):
                 return None
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            val = str(data.get("server_url") or "").strip().rstrip("/")
-            return val or None
+            val = data.get(key)
+            return str(val).strip() if val else None
         except Exception as exc:
-            logger.debug("Failed to read server_config.json: %s", exc)
+            logger.debug("Failed to read key %s from server_config.json: %s", key, exc)
             return None
 
-    def _remote_url(self, force_refresh: bool = False) -> Optional[str]:
+    def _remote_config(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Lazy remote fetch with thread-safe in-process caching."""
         if not force_refresh and self._remote_fetched:
-            return self._cached_remote_url
+            return self._cached_remote_config or {}
         with self._lock:
             if not force_refresh and self._remote_fetched:
-                return self._cached_remote_url
-            self._cached_remote_url = _fetch_remote_server_url()
+                return self._cached_remote_config or {}
+            self._cached_remote_config = _fetch_remote_config()
             self._remote_fetched = True
-            return self._cached_remote_url
+            return self._cached_remote_config or {}
 
 
 # Module-level singleton consumed across the code base.
