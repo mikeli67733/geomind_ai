@@ -114,6 +114,21 @@ class Settings:
         except Exception:
             return None
 
+    def tianditu_api_key(self) -> str:
+        """Resolve the Tianditu geocoding key at runtime (env > QSettings > local file)."""
+        env = os.environ.get("GEOMIND_TIANDITU_TK", "").strip()
+        if env:
+            return env
+        try:
+            from qgis.PyQt.QtCore import QSettings
+            raw = QSettings(SETTINGS_ORG, SETTINGS_APP).value("tianditu_api_key", "7ba1ada42adefb5df42e4a1364b321c4")
+            val = str(raw or "").strip()
+            if val:
+                return val
+        except Exception:
+            pass
+        return self._local_file_value("tianditu_api_key") or ""
+
     def _local_file_value(self, key: str) -> Optional[str]:
         """Read a specific key from ``server_config.json`` shipped in the plugin directory."""
         try:

@@ -77,7 +77,7 @@ class LoginDialog(QDialog):
         form.addRow("密码:", self.reg_password_edit)
         form.addRow("确认密码:", self.reg_password_confirm_edit)
 
-        tip = QLabel("提示：注册即自动开通「免费版」，每天可免费解译 20 次。\n注意：单台设备仅允许注册 1 个免费账号。")
+        tip = QLabel("提示：注册即自动开通「免费版」，每天可免费解译 20 次。\n注意：单台设备仅允许注册 5 个免费账号。")
         tip.setStyleSheet("color: #888888; font-size: 11px;")
         tip.setWordWrap(True)
 

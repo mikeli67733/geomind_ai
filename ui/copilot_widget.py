@@ -31,43 +31,12 @@ from .theme import (
     BTN_SEND_QSS, CHAT_HISTORY_QSS, INPUT_CARD_QSS, MENU_QSS,
 )
 
-# 内部技能函数名到人类友好提示文案的映射表
-SKILL_HUMAN_LABELS = {
-    "get_active_layers": "读取当前图层列表与物理画像",
-    # "skill_calc_spectral_index": "计算遥感物理光谱指数",
-    "skill_raster_threshold": "栅格指数阈值二值化提取",
-    "skill_run_pca": "执行主成分分析 (PCA)",
-    "skill_dem_analysis": "分析 DEM 地形要素",
-    "skill_spatial_filter": "执行空间滤波与边缘提取",
-    "skill_area_statistics": "统计地物分类与图斑面积",
-    "skill_vector_smooth": "平滑与化简矢量图斑",
-    "skill_kmeans_cluster": "执行 K-Means 聚类分析",
-    "skill_raster_diff": "双期像元差分变化检测",
-    "skill_image_enhance": "影像画质增强与真/假彩色合成",
-    "skill_raster_polygonize": "栅格结果矢量化与面要素提取",
-    "skill_geocode_address": "地名地址解析与地图定位",
-    "skill_ai_extract_feature": "启动云端标准地物解译模型",
-    "skill_ai_sam3_extract": "启动云端 SAM3 交互提示解译",
-    "skill_ai_change_detection": "启动云端深度时相变化检测模型",
-    "qgis_search_tools": "检索 QGIS 空间算法工具箱",
-    "qgis_get_tool_params": "读取 QGIS 算法参数配置",
-    "qgis_run_algorithm": "执行 QGIS 本地空间分析算法",
-    "skill_fetch_sentinel2_imagery": "检索并流式加载 Sentinel-2 影像",
-    "skill_fetch_dem_data": "检索并加载 30m 全球 Copernicus DEM",
-    "execute_pyqgis_code": "执行动态 PyQGIS 空间分析代码",
-    "skill_add_osm_basemap": "加载 OpenStreetMap (OSM) 在线底图",
-    "skill_fetch_osm_vector_data": "获取 OpenStreetMap 真实矢量 JSON 数据",
-    "skill_fetch_natural_earth": "加载 Natural Earth 全球基础矢量",
-    "skill_fetch_landsat_imagery": "流式检索加载 Landsat 8/9 影像",
-    "skill_fetch_worldcover_lulc": "加载 ESA 10m 全球土地利用覆盖",
-    "skill_fetch_worldpop_density": "加载 WorldPop 全球人口密度数据",
-    "skill_fetch_nighttime_lights": "加载 VIIRS 全球夜间灯光影像",
-    "skill_fetch_hydrology_data": "加载 HydroSHEDS 全球水文河网",
-    "skill_fetch_era5_climate": "查询 ECMWF ERA5 气象气候数据",
-    "skill_web_search": "联网检索实时资讯与专业文档",
-    "skill_fetch_webpage_content": "抓取并解析网页正文内容",
-    "skill_fetch_sentinel1_sar": "检索并流式加载 Sentinel-1 SAR 雷达影像"
-}
+# 内部技能函数名的展示文案统一由 tools.skill_registry 提供
+from ..tools.skill_registry import skill_label as _skill_registry_label
+
+
+def _skill_human_label(fn_name: str) -> str:
+    return _skill_registry_label(fn_name)
 
 
 def _render_mini_markdown(raw_text: str) -> str:
@@ -601,10 +570,7 @@ class LlmCopilotWidget(QWidget):
                 args_raw = tc["function"]["arguments"]
                 self._consecutive_tool_calls.append(fn_name)
 
-                label = SKILL_HUMAN_LABELS.get(
-                    fn_name,
-                    f"执行空间算法: {fn_name.replace('skill_', '').replace('_', ' ').title()}"
-                )
+                label = _skill_human_label(fn_name)
 
                 tool_record = {"label": label, "status": "running", "result": ""}
                 self._current_assistant_item["tools"].append(tool_record)
@@ -662,15 +628,18 @@ class LlmCopilotWidget(QWidget):
         self._render_chat_ui(force=True)
         self._reset_btn()
 
-    # -- 技能分发调度与并发任务管理 (动态安全反射版) -------------------------
+    # -- 技能分发调度与并发任务管理 (白名单注册表版) -------------------------
 
     def _execute_local_skill(self, fn_name: str, args: dict) -> str:
         from ..tools import skill_dispatcher
+        from ..tools.skill_registry import get_skill
         from ..utils.extent_guard import check_extent_too_large
+        from ..core.prompts import GUARD_LAYER_POLLING, AI_TASK_SUBMITTED, EXTENT_TOO_LARGE_REPLY
 
-        server_url = self.dock.current_server_url()
-        token = self.dock.token
-        machine_id = self.dock.machine_id
+        session = self.dock.current_session()
+        server_url = session.server_url
+        token = session.token
+        machine_id = session.machine_id
 
         # 刷新事件队列，防止网络请求前界面被判定为卡死
         QCoreApplication.processEvents()
@@ -679,12 +648,7 @@ class LlmCopilotWidget(QWidget):
         if fn_name == "get_active_layers":
             layer_calls = [name for name in self._consecutive_tool_calls if name == "get_active_layers"]
             if len(layer_calls) >= 2:
-                return (
-                    "【系统防死锁拦截】检测到图层状态在本轮中未发生变化。\n"
-                    "后台异步解译任务正在 GPU 上运算，图层尚未生成。\n"
-                    "请你立即结束本次对话，直接向用户说明'解译任务已在后台执行，请稍候'，"
-                    "严禁在此轮中继续调用 get_active_layers 查询！"
-                )
+                return GUARD_LAYER_POLLING
 
         # 1. 云端深度解译并发任务提交
         if fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
@@ -709,27 +673,27 @@ class LlmCopilotWidget(QWidget):
                         "content": f"解译范围过大已拦截：{guard_msg}"
                     })
                     self._render_chat_ui(force=True)
-                    return f"已停止执行解译：当前地图视口范围过大（{guard_msg}）。请明确告知用户需要放大地图视图。"
+                    return EXTENT_TOO_LARGE_REPLY.format(reason=guard_msg)
 
             task_semantic_name = "AI解译"
             try:
                 if fn_name == "skill_ai_extract_feature":
                     feat = args.get("feature_type", "地物")
                     task_semantic_name = f"AI_{feat}"
-                    task = getattr(skill_dispatcher, "skill_ai_extract_feature")(
+                    task = skill_dispatcher.skill_ai_extract_feature(
                         args.get("layer_name"), args.get("feature_type"),
                         server_url, token, machine_id, extent=extent, extent_crs=extent_crs,
                     )
                 elif fn_name == "skill_ai_sam3_extract":
                     prompt_tag = args.get("prompt", "SAM3").replace(" ", "_")
                     task_semantic_name = f"SAM3_{prompt_tag}"
-                    task = getattr(skill_dispatcher, "skill_ai_sam3_extract")(
+                    task = skill_dispatcher.skill_ai_sam3_extract(
                         args.get("layer_name"), args.get("prompt"), args.get("output_format", "mask"),
                         server_url, token, machine_id, extent=extent, extent_crs=extent_crs,
                     )
                 else:
                     task_semantic_name = "AI_时相变化"
-                    task = getattr(skill_dispatcher, "skill_ai_change_detection")(
+                    task = skill_dispatcher.skill_ai_change_detection(
                         args.get("layer_t1"), args.get("layer_t2"),
                         server_url, token, machine_id, extent=extent, extent_crs=extent_crs,
                     )
@@ -778,23 +742,18 @@ class LlmCopilotWidget(QWidget):
             task.taskCancelled.connect(lambda tid=task_id: self._on_ai_task_cancelled(tid))
 
             QgsApplication.taskManager().addTask(task)
-            return (
-                f"【后台任务已启动】已成功向云端 GPU 集群投递【{task_semantic_name}】解译任务，正在后台异步处理。\n"
-                f"⚠️ 重要提示：解译任务在后台运行需要数秒时间，请大模型立即结束本轮回合并向用户汇报'【{task_semantic_name}】任务已提交后台，请稍候'，"
-                f"严禁在此轮中继续调用任何工具或轮询查询图层！"
-            )
+            return AI_TASK_SUBMITTED.format(task_name=task_semantic_name)
 
-        # 2. 本地全部算子动态安全反射执行
-        tool_func = getattr(skill_dispatcher, fn_name, None)
-        if tool_func is not None and callable(tool_func):
-            try:
-                res = str(tool_func(**args))
-                QCoreApplication.processEvents()
-                return res
-            except Exception as e:
-                return f"执行算子 `{fn_name}` 失败: {e}"
-
-        return f"未找到可执行工具: {fn_name}"
+        # 2. 本地算子经白名单注册表执行（拒绝未注册的任意函数名）
+        spec = get_skill(fn_name)
+        if spec is None:
+            return f"未找到可执行工具或工具未在白名单注册: {fn_name}"
+        try:
+            res = str(spec.func(**args))
+            QCoreApplication.processEvents()
+            return res
+        except Exception as e:
+            return f"执行算子 `{fn_name}` 失败: {e}"
 
     def _on_progress_timer_tick(self):
         """定时器脉冲：驱动图标闪烁与平滑进度渐进"""

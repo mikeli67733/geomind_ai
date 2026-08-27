@@ -24,6 +24,7 @@ from ..core.constants import (
     find_class_ids_by_keywords,
 )
 from ..core.exceptions import AuthApiError
+from ..core.session import SessionContext
 from ..core.logger import get_logger
 from ..api.auth_client import GeoMindAuthClient
 from ..utils.machine_id import get_machine_id
@@ -233,6 +234,14 @@ class ImageInterpretDockWidget(QDockWidget):
 
     def current_server_url(self) -> str:
         return self.get_remote_or_default_url()
+
+    def current_session(self) -> SessionContext:
+        """Snapshot of server URL + credentials, for skills/tasks/UI layers."""
+        return SessionContext(
+            server_url=self.current_server_url(),
+            token=self.token,
+            machine_id=self.machine_id,
+        )
 
     # ------------------------------------------------------------------
     # Settings & login state

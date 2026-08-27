@@ -71,11 +71,13 @@ API_COPILOT_CHAT = "/api/v1/copilot/chat"
 # External service configuration
 # ===========================================================================
 
-# Tianditu geocoding API — key should be set via environment variable
-TIANDITU_API_KEY = os.environ.get("GEOMIND_TIANDITU_TK", "7ba1ada42adefb5df42e4a1364b321c4")
+# Tianditu geocoding API — key is resolved from (first hit wins):
+#   1. GEOMIND_TIANDITU_TK environment variable
+#   2. QSettings key "tianditu_api_key"
+#   3. remote config / server_config.json key "tianditu_api_key"
+# No hard-coded fallback: shipping a real key inside the plugin would leak it.
+TIANDITU_API_KEY = os.environ.get("GEOMIND_TIANDITU_TK", "")
 TIANDITU_GEOCODER_URL = "https://api.tianditu.gov.cn/geocoder"
-
-XIANYU_PRODUCT_URL = "https://m.tb.cn/h.8SfKfsd?tk=u3XFgAMYbS2"
 
 # ===========================================================================
 # Default operational parameters
