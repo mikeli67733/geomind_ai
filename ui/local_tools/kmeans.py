@@ -22,6 +22,7 @@ class KMeansClusterWidget(BaseLocalToolWidget):
         layer_group = QGroupBox("1. 输入栅格")
         layer_v = QVBoxLayout(layer_group)
         self.layer_combo = QgsMapLayerComboBox()
+        self.layer_combo.setObjectName("layer_combo")
         self.layer_combo.setFilters(RASTER_LAYER_FILTER)
         layer_v.addWidget(self.layer_combo)
         layout.addWidget(layer_group)
@@ -29,10 +30,12 @@ class KMeansClusterWidget(BaseLocalToolWidget):
         param_group = QGroupBox("2. K-Means 聚类参数")
         param_grid = QGridLayout(param_group)
         param_grid.addWidget(QLabel("地物聚类类别数 (K):"), 0, 0)
-        self.spin_k = QSpinBox(); self.spin_k.setRange(2, 15); self.spin_k.setValue(5)
+        self.spin_k = QSpinBox(); self.spin_k.setObjectName("spin_k")
+        self.spin_k.setRange(2, 15); self.spin_k.setValue(5)
         param_grid.addWidget(self.spin_k, 0, 1)
         param_grid.addWidget(QLabel("最大迭代次数:"), 1, 0)
-        self.spin_iter = QSpinBox(); self.spin_iter.setRange(5, 50); self.spin_iter.setValue(15)
+        self.spin_iter = QSpinBox(); self.spin_iter.setObjectName("spin_iter")
+        self.spin_iter.setRange(5, 50); self.spin_iter.setValue(15)
         param_grid.addWidget(self.spin_iter, 1, 1)
         layout.addWidget(param_group)
 
@@ -52,13 +55,17 @@ class KMeansClusterWidget(BaseLocalToolWidget):
         if not layer or not isinstance(layer, QgsRasterLayer):
             QMessageBox.warning(self, "提示", "请选择有效的栅格图层")
             return
+        self.mark_run_started()
         k = self.spin_k.value()
         self.status_label.setText("正在执行像元聚类中...")
         QApplication.processEvents()
         try:
-            kmeans_cluster(layer.source(), k, self.spin_iter.value())
+            out_path = kmeans_cluster(layer.source(), k, self.spin_iter.value())
             self.status_label.setText(f"聚类完成！共生成 {k} 个地物类别")
+            self.record_local_run(
+                "ok", summary=f"K-Means 聚类 (K={k})", output_paths=[out_path])
             QMessageBox.information(self, "成功", "K-Means 聚类成功！")
         except Exception as e:
             self.status_label.setText("聚类失败")
+            self.record_local_run("failed", error=str(e))
             QMessageBox.critical(self, "错误", f"K-Means 执行异常: {e}")

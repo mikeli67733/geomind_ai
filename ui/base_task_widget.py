@@ -7,6 +7,7 @@ selection, progress bar, cancel button) that all AI task widgets inherit.
 """
 import os
 import tempfile
+import time
 from datetime import datetime
 
 from osgeo import gdal
@@ -27,6 +28,8 @@ from ..core.compat import RASTER_LAYER_FILTER
 from ..core.constants import (
     LANDUSE_CLASSES, DEFAULT_CHECKED_CLASS_IDS, get_model_key_by_mode,
 )
+from ..core.history import history_store
+from ..core.memory import memory_store
 from ..utils.extent_tool import ExtentSelectTool
 from ..tasks.interpret_task import InterpretTask
 
@@ -40,11 +43,23 @@ class BaseTaskWidget(QWidget):
         self.canvas = main_dock.canvas
         self.model_key = model_key
         self.mode = mode
+        self.page_key = None      # assigned by the dock registry
+        self.page_title = None
+        self._memory_applied = False
+        self._last_run_started = None
+        self._last_run_params = {}
+        self._last_input_layers = []
+        self._last_layers_map = {}
 
         self.extent_tool = None
         self.selected_extent = None
         self.task = None
+        self._layer_user_picked = False
+        self._extent_user_picked = False
         self._build_base_ui()
+        # ``activated`` only fires on real user interaction, never on
+        # programmatic setLayer — used to honour the user's own choice.
+        self.layer_combo_t1.activated.connect(self._on_t1_user_picked)
 
     def _build_base_ui(self):
         layout = QVBoxLayout(self)
@@ -110,10 +125,18 @@ class BaseTaskWidget(QWidget):
         self.progress_bar.setVisible(False)
         run_layout.addWidget(self.progress_bar)
 
+        status_row = QHBoxLayout()
+        status_row.setSpacing(6)
+        self.history_btn = QPushButton("🕘 历史")
+        self.history_btn.setFixedWidth(72)
+        self.history_btn.setToolTip("查看该工具页的历史运行记录")
+        self.history_btn.clicked.connect(self._show_page_history)
+        status_row.addWidget(self.history_btn)
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet("color: #64748b; font-size: 12px;")
-        run_layout.addWidget(self.status_label)
+        status_row.addWidget(self.status_label, stretch=1)
+        run_layout.addLayout(status_row)
         layout.addWidget(run_group)
         layout.addStretch()
 
@@ -124,6 +147,103 @@ class BaseTaskWidget(QWidget):
 
     def get_task_parameters(self) -> dict:
         return {}
+
+    def apply_saved_params(self, params: dict):
+        """Restore saved parameters (memory prefill / history re-run)."""
+        pass
+
+    # -- History & memory ---------------------------------------------------
+
+    def _show_page_history(self):
+        self.dock.show_history_page(filter_key=self.page_key or "")
+
+    def showEvent(self, event):
+        """Prefill remembered parameters and adopt the home-page selection."""
+        super().showEvent(event)
+        if self.page_key and not self._memory_applied:
+            self._memory_applied = True
+            suggested = memory_store.suggested_params(self.page_key)
+            if suggested:
+                self.apply_saved_params(suggested)
+                self.status_label.setText(
+                    "🧠 已按您的使用习惯预填参数（可在历史页查看记忆详情）")
+        # A fresh view of this page: honour the home-page global selection
+        # again unless the user already picked something by hand.
+        self._layer_user_picked = False
+        self._extent_user_picked = False
+        self._apply_global_selection()
+
+    def _on_t1_user_picked(self, _index):
+        self._layer_user_picked = True
+
+    def _apply_global_selection(self):
+        """Adopt the home-page global layer/extent unless the user chose one.
+
+        Runs on every page show and right before a task starts. The layer
+        picker defaults to the first raster, so "empty" can't be relied on —
+        we compare against the home-page layer and honour the user's own
+        pick (tracked via the ``activated`` signal). Errors are swallowed so
+        a page-specific hiccup can never silently skip the extent.
+        """
+        try:
+            layer = getattr(self.dock, "global_layer", None)
+            if isinstance(layer, QgsRasterLayer) and not self._layer_user_picked:
+                current = self.layer_combo_t1.currentLayer()
+                if current is None or current != layer:
+                    self.layer_combo_t1.setLayer(layer)
+                    self.status_label.setText(
+                        f"已使用主页选择的图层: {layer.name()}")
+            extent = getattr(self.dock, "global_extent", None)
+            if extent is not None and not self._extent_user_picked:
+                # Always adopt the home-page extent over any stale extent left
+                # on this page (unless the user picked one here by hand).
+                if self.selected_extent is None or self.selected_extent != extent:
+                    self._on_extent_selected(extent)
+        except Exception as exc:
+            from ..core.logger import get_logger
+            get_logger(__name__).warning(
+                "Failed to apply home-page selection: %s", exc)
+
+    @staticmethod
+    def _sanitize_params(params: dict) -> dict:
+        """Replace live QGIS objects with JSON-safe fingerprints."""
+        safe = {}
+        for key, value in params.items():
+            if isinstance(value, QgsRasterLayer):
+                safe[key] = {
+                    "_type": "layer",
+                    "id": value.id(), "name": value.name(), "source": value.source(),
+                }
+            else:
+                safe[key] = value
+        return safe
+
+    def _record_history(self, status: str, result_path: str = "", error: str = ""):
+        if not self.page_key:
+            return
+        duration_ms = 0
+        if self._last_run_started is not None:
+            duration_ms = int((time.time() - self._last_run_started) * 1000)
+        history_store.record_run(
+            page_key=self.page_key,
+            page_title=self.page_title or self.page_key,
+            status=status,
+            params=self._last_run_params,
+            summary=f"{self.page_title or self.page_key} 运行{self._status_text(status)}",
+            input_layers=self._last_input_layers,
+            output_files=[result_path] if result_path else [],
+            duration_ms=duration_ms,
+            error=error,
+        )
+        memory_store.record_usage(
+            page_key=self.page_key,
+            params=self._last_run_params,
+            layers=self._last_layers_map,
+        )
+
+    @staticmethod
+    def _status_text(status: str) -> str:
+        return {"ok": "成功", "failed": "失败", "cancelled": "已取消"}.get(status, status)
 
     # -- Extent selection ---------------------------------------------------
 
@@ -138,6 +258,7 @@ class BaseTaskWidget(QWidget):
 
     def _on_extent_selected(self, rect: QgsRectangle):
         self.selected_extent = rect
+        self._extent_user_picked = True
         crs_id = self.canvas.mapSettings().destinationCrs().authid()
         self.extent_label.setText(
             f"X: [{rect.xMinimum():.2f}, {rect.xMaximum():.2f}]\n"
@@ -160,6 +281,15 @@ class BaseTaskWidget(QWidget):
             self.dock.show_account_page()
             return
 
+        # Adopt the home-page global selection if nothing is set here yet.
+        self._apply_global_selection()
+        # Hard fallback right before running: never fall through to the
+        # canvas view extent when the user picked a global extent on the
+        # home page but this page's own extent is still empty.
+        if (self.selected_extent is None
+                and getattr(self.dock, "global_extent", None) is not None):
+            self._on_extent_selected(self.dock.global_extent)
+
         layer_t1 = self.layer_combo_t1.currentLayer()
         if layer_t1 is None or not isinstance(layer_t1, QgsRasterLayer):
             QMessageBox.warning(self, "提示", "请选择有效的基准期 T1 栅格图层")
@@ -172,6 +302,23 @@ class BaseTaskWidget(QWidget):
         params = self.get_task_parameters()
         if params is None:
             return
+
+        # Snapshot for history / memory backtracking.
+        self._last_run_started = time.time()
+        self._last_run_params = self._sanitize_params(params)
+        self._last_input_layers = [{
+            "name": layer_t1.name(), "id": layer_t1.id(), "source": layer_t1.source(),
+        }]
+        t2_layer = params.get("layer_t2")
+        if t2_layer is not None:
+            self._last_input_layers.append({
+                "name": t2_layer.name(), "id": t2_layer.id(), "source": t2_layer.source(),
+            })
+            self._last_layers_map = {
+                "layer_combo_t1": layer_t1.id(), "layer_combo_t2": t2_layer.id(),
+            }
+        else:
+            self._last_layers_map = {"layer_combo_t1": layer_t1.id()}
 
         canvas_crs = self.canvas.mapSettings().destinationCrs()
 
@@ -195,7 +342,10 @@ class BaseTaskWidget(QWidget):
         self._task_canvas_crs = canvas_crs
 
         self._set_running_state(True)
-        self.status_label.setText("正在打包影像并提交任务，请稍候...")
+        ext = self.selected_extent
+        self.status_label.setText(
+            f"将使用范围 X[{ext.xMinimum():.2f}–{ext.xMaximum():.2f}] "
+            f"Y[{ext.yMinimum():.2f}–{ext.yMaximum():.2f}] 提交解译，请稍候...")
         actual_model_key = self.model_key or get_model_key_by_mode(self.mode)
 
         task = InterpretTask(
@@ -261,6 +411,7 @@ class BaseTaskWidget(QWidget):
 
         QgsProject.instance().addMapLayer(new_layer)
         self.status_label.setText(f"解译完成！已加载图层: {layer_name}")
+        self._record_history("ok", result_path=result_path)
         self.dock.refresh_account_info(silent=True)
 
     def _on_finished_error(self, error_msg):
@@ -268,6 +419,7 @@ class BaseTaskWidget(QWidget):
         self.task = None
         self.dock.active_running_task = None
         self.status_label.setText("解译失败")
+        self._record_history("failed", error=error_msg)
         QMessageBox.critical(self, "解译失败", f"{error_msg}\n\n💡 提示：若遇到网关错误，可在设置页刷新网关。")
         if "登录已过期" in error_msg:
             self.dock.logout()
@@ -279,6 +431,7 @@ class BaseTaskWidget(QWidget):
         self.task = None
         self.dock.active_running_task = None
         self.status_label.setText("任务已成功打断")
+        self._record_history("cancelled")
 
     def _clip_layer_to_extent(self, layer, result_path, extent, extent_crs, layer_name):
         """Clip the result layer to the original selection extent."""
@@ -345,6 +498,12 @@ class LanduseMultiTaskWidget(BaseTaskWidget):
             return None
         return {"target_class": ",".join(selected_ids), "output_format": "mask"}
 
+    def apply_saved_params(self, params: dict):
+        target = str(params.get("target_class", ""))
+        ids = [cls_id.strip() for cls_id in target.split(",") if cls_id.strip()]
+        for cls_id, cb in self.class_checkboxes.items():
+            cb.setChecked(str(cls_id) in ids)
+
 
 class SingleThemeExtractionWidget(BaseTaskWidget):
     """Single-theme extraction widget (building, water, road, etc.)."""
@@ -395,6 +554,16 @@ class Sam3TaskWidget(BaseTaskWidget):
             return None
         return {"prompt": prompt, "output_format": self.sam_out_type_combo.currentData() or "mask"}
 
+    def apply_saved_params(self, params: dict):
+        prompt = params.get("prompt")
+        if prompt:
+            self.prompt_edit.setPlainText(str(prompt))
+        fmt = params.get("output_format")
+        if fmt:
+            idx = self.sam_out_type_combo.findData(fmt)
+            if idx >= 0:
+                self.sam_out_type_combo.setCurrentIndex(idx)
+
 
 class ChangeDetectionTaskWidget(BaseTaskWidget):
     """Dual-period change detection widget."""
@@ -424,3 +593,14 @@ class ChangeDetectionTaskWidget(BaseTaskWidget):
             QMessageBox.warning(self, "提示", "必须同时选择后期 T2 栅格图层")
             return None
         return {"layer_t2": layer_t2, "output_format": "mask"}
+
+    def apply_saved_params(self, params: dict):
+        t2 = params.get("layer_t2")
+        if t2 is None:
+            return
+        if isinstance(t2, dict):
+            layer = QgsProject.instance().mapLayer(t2.get("id", ""))
+        else:
+            layer = t2
+        if layer is not None:
+            self.layer_combo_t2.setLayer(layer)

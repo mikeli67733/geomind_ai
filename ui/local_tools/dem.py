@@ -21,6 +21,7 @@ class DemAnalysisWidget(BaseLocalToolWidget):
         layer_group = QGroupBox("1. 输入高程 DEM 栅格")
         layer_v = QVBoxLayout(layer_group)
         self.layer_combo = QgsMapLayerComboBox()
+        self.layer_combo.setObjectName("layer_combo")
         self.layer_combo.setFilters(RASTER_LAYER_FILTER)
         layer_v.addWidget(self.layer_combo)
         layout.addWidget(layer_group)
@@ -29,13 +30,15 @@ class DemAnalysisWidget(BaseLocalToolWidget):
         param_grid = QGridLayout(param_group)
         param_grid.addWidget(QLabel("分析功能:"), 0, 0)
         self.dem_type_combo = QComboBox()
+        self.dem_type_combo.setObjectName("dem_type_combo")
         self.dem_type_combo.addItem("🗻 山体阴影 (Hillshade - 三维光照判读)", "hillshade")
         self.dem_type_combo.addItem("📐 坡度分析 (Slope - 度数度量)", "slope")
         self.dem_type_combo.addItem("🧭 坡向分析 (Aspect - 方位角)", "aspect")
         self.dem_type_combo.addItem("📈 地形起伏度 (TRI - 地形粗糙度)", "TRI")
         param_grid.addWidget(self.dem_type_combo, 0, 1)
         param_grid.addWidget(QLabel("Z 轴高程缩放系数:"), 1, 0)
-        self.spin_z = QDoubleSpinBox(); self.spin_z.setRange(0.1, 100.0); self.spin_z.setValue(1.0)
+        self.spin_z = QDoubleSpinBox(); self.spin_z.setObjectName("spin_z")
+        self.spin_z.setRange(0.1, 100.0); self.spin_z.setValue(1.0)
         param_grid.addWidget(self.spin_z, 1, 1)
         layout.addWidget(param_group)
 
@@ -55,14 +58,18 @@ class DemAnalysisWidget(BaseLocalToolWidget):
         if not layer:
             QMessageBox.warning(self, "提示", "请选择 DEM 栅格图层")
             return
+        self.mark_run_started()
         dem_type = self.dem_type_combo.currentData()
         name_label = self.dem_type_combo.currentText().split(" ")[0]
         self.status_label.setText("正在计算地形特征...")
         QApplication.processEvents()
         try:
-            dem_analysis(layer.source(), dem_type, self.spin_z.value())
+            out_path = dem_analysis(layer.source(), dem_type, self.spin_z.value())
             self.status_label.setText("地形分析完成！图层已加载")
+            self.record_local_run(
+                "ok", summary=f"DEM 地形分析 [{name_label}]", output_paths=[out_path])
             QMessageBox.information(self, "成功", f"地形分析 [{name_label}] 完成！")
         except Exception as e:
             self.status_label.setText("地形分析失败")
+            self.record_local_run("failed", error=str(e))
             QMessageBox.critical(self, "错误", f"DEM 分析失败: {e}")

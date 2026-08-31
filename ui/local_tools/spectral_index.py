@@ -45,6 +45,7 @@ class SpectralIndexTaskWidget(BaseLocalToolWidget):
         layer_group = QGroupBox("1. 输入多波段栅格图层")
         layer_v = QVBoxLayout(layer_group)
         self.layer_combo = QgsMapLayerComboBox()
+        self.layer_combo.setObjectName("layer_combo")
         self.layer_combo.setFilters(RASTER_LAYER_FILTER)
         self.layer_combo.layerChanged.connect(self._on_layer_changed)
         layer_v.addWidget(self.layer_combo)
@@ -56,6 +57,7 @@ class SpectralIndexTaskWidget(BaseLocalToolWidget):
 
         param_grid.addWidget(QLabel("计算指数:"), 0, 0)
         self.index_combo = QComboBox()
+        self.index_combo.setObjectName("index_combo")
         self.index_combo.addItem("🍀 NDVI (归一化植被指数)", "ndvi")
         self.index_combo.addItem("🍃 GNDVI (绿度植被指数)", "gndvi")
         self.index_combo.addItem("🌱 SAVI (土壤调节植被指数)", "savi")
@@ -71,20 +73,25 @@ class SpectralIndexTaskWidget(BaseLocalToolWidget):
         param_grid.addWidget(self.index_combo, 0, 1)
 
         self.lbl_b1 = QLabel("近红外 (NIR):")
-        self.spin_b1 = QSpinBox(); self.spin_b1.setRange(1, 64); self.spin_b1.setValue(4)
+        self.spin_b1 = QSpinBox(); self.spin_b1.setObjectName("spin_b1")
+        self.spin_b1.setRange(1, 64); self.spin_b1.setValue(4)
         param_grid.addWidget(self.lbl_b1, 1, 0); param_grid.addWidget(self.spin_b1, 1, 1)
 
         self.lbl_b2 = QLabel("红光 (Red):")
-        self.spin_b2 = QSpinBox(); self.spin_b2.setRange(1, 64); self.spin_b2.setValue(3)
+        self.spin_b2 = QSpinBox(); self.spin_b2.setObjectName("spin_b2")
+        self.spin_b2.setRange(1, 64); self.spin_b2.setValue(3)
         param_grid.addWidget(self.lbl_b2, 2, 0); param_grid.addWidget(self.spin_b2, 2, 1)
 
         self.lbl_b3 = QLabel("蓝光 (Blue):")
-        self.spin_b3 = QSpinBox(); self.spin_b3.setRange(1, 64); self.spin_b3.setValue(1)
+        self.spin_b3 = QSpinBox(); self.spin_b3.setObjectName("spin_b3")
+        self.spin_b3.setRange(1, 64); self.spin_b3.setValue(1)
         self.lbl_b3.setVisible(False); self.spin_b3.setVisible(False)
         param_grid.addWidget(self.lbl_b3, 3, 0); param_grid.addWidget(self.spin_b3, 3, 1)
 
         self.cb_threshold = QCheckBox("启用阈值二值化提取:")
+        self.cb_threshold.setObjectName("cb_threshold")
         self.spin_threshold = QDoubleSpinBox()
+        self.spin_threshold.setObjectName("spin_threshold")
         self.spin_threshold.setRange(-1.0, 1.0)
         self.spin_threshold.setSingleStep(0.05)
         self.spin_threshold.setValue(0.2)
@@ -175,6 +182,7 @@ class SpectralIndexTaskWidget(BaseLocalToolWidget):
             QMessageBox.warning(self, "提示", "无法读取图层源文件路径")
             return
 
+        self.mark_run_started()
         idx_type = self.index_combo.currentData()
         idx_name = self.index_combo.currentText().split(" ")[0]
         threshold = self.spin_threshold.value() if self.cb_threshold.isChecked() else None
@@ -198,12 +206,15 @@ class SpectralIndexTaskWidget(BaseLocalToolWidget):
                 ds_crop = None
                 read_path = temp_crop
 
-            calc_spectral_index(
+            out_path = calc_spectral_index(
                 read_path, idx_type, self.spin_b1.value(),
                 self.spin_b2.value(), self.spin_b3.value(), threshold,
             )
             self.status_label.setText(f"计算完成！已加载 {idx_name} 图层")
+            self.record_local_run(
+                "ok", summary=f"{idx_name} 指数计算完成", output_paths=[out_path])
             QMessageBox.information(self, "成功", "指数计算完成，图层已加载！")
         except Exception as e:
             self.status_label.setText("计算出错")
+            self.record_local_run("failed", error=str(e))
             QMessageBox.critical(self, "错误", f"指数计算失败: {e}")

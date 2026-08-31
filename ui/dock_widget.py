@@ -14,6 +14,7 @@ from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QToolButton, QStackedWidget, QScrollArea, QFrame, QMessageBox,
 )
+from qgis.core import QgsRectangle
 
 from ..core.config import settings
 from ..core.constants import (
@@ -26,12 +27,14 @@ from ..core.constants import (
 from ..core.exceptions import AuthApiError
 from ..core.session import SessionContext
 from ..core.logger import get_logger
+from ..core import spatial_scope
 from ..api.auth_client import GeoMindAuthClient
 from ..utils.machine_id import get_machine_id
 
 from .theme import MAIN_DOCK_QSS, TOP_BAR_QSS
 from .copilot_widget import LlmCopilotWidget
 from .account_page import AccountSettingsPage
+from .history_page import HistoryPage
 from .login_dialog import LoginDialog
 from .plan_dialog import PlanDialog
 from .base_task_widget import (
@@ -41,6 +44,8 @@ from .base_task_widget import (
     ChangeDetectionTaskWidget,
 )
 from .local_tools import LOCAL_TOOL_PAGES
+
+from ..core.memory import memory_store
 
 logger = get_logger(__name__)
 
@@ -65,6 +70,11 @@ class ImageInterpretDockWidget(QDockWidget):
         self.account_info = {}
         self.active_running_task = None
 
+        # Home-page global selection: layer + extent chosen from the Copilot
+        # page, used as fallback by AI task pages that have nothing set.
+        self.global_layer = None
+        self.global_extent = None
+
         self._build_ui()
         self._load_settings()
         self._restore_dock_state()
@@ -87,7 +97,7 @@ class ImageInterpretDockWidget(QDockWidget):
         top_bar_frame.setObjectName("topBar")
         top_bar_frame.setStyleSheet(TOP_BAR_QSS)
         top_bar = QHBoxLayout(top_bar_frame)
-        top_bar.setContentsMargins(10, 6, 12, 6)
+        top_bar.setContentsMargins(10, 10, 12, 10)
         top_bar.setSpacing(8)
 
         self.back_btn = QToolButton()
@@ -98,10 +108,11 @@ class ImageInterpretDockWidget(QDockWidget):
         self.back_btn.setVisible(False)
         top_bar.addWidget(self.back_btn)
 
-        self.brand_logo = QLabel("🛰️")
+        self.brand_logo = QLabel("🌐")
         self.brand_logo.setObjectName("brandLogo")
         self.brand_logo.setFixedSize(32, 32)
         self.brand_logo.setAlignment(Qt.AlignCenter)
+        self.brand_logo.setStyleSheet("font-size:22px;")
         top_bar.addWidget(self.brand_logo)
 
         title_box = QVBoxLayout()
@@ -118,10 +129,17 @@ class ImageInterpretDockWidget(QDockWidget):
 
         self.account_btn = QToolButton()
         self.account_btn.setObjectName("iconBtn")
-        self.account_btn.setText("🧸 设置")
+        self.account_btn.setText("⚙ 设置")
         self.account_btn.setToolTip("账号与网络设置")
         self.account_btn.clicked.connect(self.show_account_page)
         top_bar.addWidget(self.account_btn)
+
+        self.history_btn = QToolButton()
+        self.history_btn.setObjectName("iconBtn")
+        self.history_btn.setText("🕘 历史")
+        self.history_btn.setToolTip("历史记录与智能记忆")
+        self.history_btn.clicked.connect(lambda: self.show_history_page())
+        top_bar.addWidget(self.history_btn)
         main_layout.addWidget(top_bar_frame)
 
         # -- Multi-page stack ------------------------------------------
@@ -134,6 +152,10 @@ class ImageInterpretDockWidget(QDockWidget):
         # Index 1: Account center
         self.account_page = AccountSettingsPage(self)
         self.stack.addWidget(self.account_page)
+
+        # Index 2: History & memory page
+        self.history_page = HistoryPage(self)
+        self.stack.addWidget(self.history_page)
 
         # Free local tools (indexes 2-11)
         self.task_pages = {}
@@ -191,7 +213,10 @@ class ImageInterpretDockWidget(QDockWidget):
 
     def _register_page(self, key: str, title: str, widget: QWidget) -> None:
         """Add a tool page to the stack and record its navigation entry."""
+        widget.page_key = key
+        widget.page_title = title
         self.task_pages[key] = (title, self.stack.addWidget(widget))
+        memory_store.remember_page_title(key, title)
 
     # ------------------------------------------------------------------
     # Navigation
@@ -203,14 +228,71 @@ class ImageInterpretDockWidget(QDockWidget):
         self.subtitle_label.setText("遥感智能解译 · AI 对话")
         self.back_btn.setVisible(False)
         self.account_btn.setVisible(True)
+        self.history_btn.setVisible(True)
 
     def show_account_page(self):
         """Enter the account & settings page."""
         self.stack.setCurrentIndex(1)
-        self.title_label.setText("个人中心与设置")
-        self.subtitle_label.setText("账号 · 网络 · 套餐")
+        # self.title_label.setText("个人中心与设置")
+        # self.subtitle_label.setText("账号 · 网络 · 套餐")
+        self.brand_logo.setVisible(False)
+        self.title_label.setText("")
+        self.subtitle_label.setText("")
         self.back_btn.setVisible(True)
         self.account_btn.setVisible(False)
+        self.history_btn.setVisible(True)
+
+    def show_history_page(self, filter_key: str = ""):
+        """Enter the history & memory page, optionally pre-filtered by page."""
+        self.stack.setCurrentIndex(2)
+        # self.title_label.setText("历史记录与智能记忆")
+        # self.subtitle_label.setText("每页归档 · 支持回溯 · 越用越智能")
+        self.brand_logo.setVisible(False)
+        self.title_label.setText("")
+        self.subtitle_label.setText("")
+        self.back_btn.setVisible(True)
+        self.account_btn.setVisible(True)
+        self.history_btn.setVisible(False)
+        if filter_key:
+            self.history_page.set_page_filter(filter_key)
+        else:
+            self.history_page.refresh(keep_selection=False)
+
+    def prefill_page_params(self, page_key: str, params: dict) -> None:
+        """Ask a registered page to apply saved parameters (memory prefill)."""
+        entry = self.task_pages.get(page_key)
+        if not entry:
+            return
+        widget = self.stack.widget(entry[1])
+        apply = getattr(widget, "apply_saved_params", None)
+        if callable(apply):
+            try:
+                apply(params)
+            except Exception as exc:
+                logger.debug("Failed to prefill params for %s: %s", page_key, exc)
+
+    # ------------------------------------------------------------------
+    # Home-page global selection (layer + extent)
+    # ------------------------------------------------------------------
+    def set_global_selection(self, layer=None, extent=None):
+        """Store the layer/extent picked on the home page and refresh the chip.
+
+        ``extent`` is a QgsRectangle in the canvas CRS at selection time.
+        """
+        if layer is not None:
+            self.global_layer = layer
+        if extent is not None:
+            self.global_extent = QgsRectangle(extent)
+            # 镜像写入共享状态，供不依赖 UI dock 的技能/工具模块
+            # （云端数据抓取、AI 解译等）统一读取，取代它们各自的
+            # canvas.extent() 回退逻辑。
+            spatial_scope.set_active_extent(
+                self.global_extent, self.canvas.mapSettings().destinationCrs())
+        self.copilot_page.update_selection_chip()
+
+    def global_selection(self):
+        """Return (layer, extent) currently picked on the home page."""
+        return self.global_layer, self.global_extent
 
     def navigate_to_task(self, task_key: str):
         """Jump directly to a tool page (used by the Tools menu)."""
@@ -343,4 +425,11 @@ class ImageInterpretDockWidget(QDockWidget):
     def closeEvent(self, event):
         self.save_dock_state(visible=False)
         self.cancel_running_task()
+        # Finalize the in-progress Copilot chat session so it shows up complete.
+        finalize = getattr(self.copilot_page, "finalize_chat_session", None)
+        if callable(finalize):
+            try:
+                finalize()
+            except Exception as exc:
+                logger.debug("Failed to finalize chat session: %s", exc)
         super().closeEvent(event)

@@ -3,6 +3,7 @@
 tile math and terrain-tile decoding. All skill modules import from here."""
 
 from ..place_bboxes import CITY_BBOXES
+from ...core import spatial_scope
 import os
 import re
 import json
@@ -108,20 +109,31 @@ def _get_target_bbox(place_name: str = "当前视口") -> Tuple[List[float], str
         else:
             located_msg = f"⚠️ 未能解析地名 `{place_name}`，已使用当前屏幕视口\n"
 
-    # 2. 从当前屏幕视口提取物理矩形（不缩放、不截断，所见即所得）
-    if bbox is None and canvas:
-        rect = canvas.extent()
-        src_crs = canvas.mapSettings().destinationCrs()
-        dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
-        tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
-        wgs_rect = tr.transformBoundingBox(rect)
+    # 2. 未指定地名：优先使用主页框选的范围，其次才退回当前屏幕视口
+    if bbox is None:
+        scoped_rect, scoped_crs = spatial_scope.get_active_extent()
+        if scoped_rect is not None:
+            rect = scoped_rect
+            src_crs = scoped_crs or (canvas.mapSettings().destinationCrs() if canvas else None)
+            located_msg = "📍 已使用主页框选的范围\n"
+        elif canvas:
+            rect = canvas.extent()
+            src_crs = canvas.mapSettings().destinationCrs()
+        else:
+            rect = None
+            src_crs = None
 
-        bbox = [
-            round(wgs_rect.xMinimum(), 6),
-            round(wgs_rect.yMinimum(), 6),
-            round(wgs_rect.xMaximum(), 6),
-            round(wgs_rect.yMaximum(), 6),
-        ]
+        if rect is not None and src_crs is not None:
+            dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+            wgs_rect = tr.transformBoundingBox(rect)
+
+            bbox = [
+                round(wgs_rect.xMinimum(), 6),
+                round(wgs_rect.yMinimum(), 6),
+                round(wgs_rect.xMaximum(), 6),
+                round(wgs_rect.yMaximum(), 6),
+            ]
 
     # 兜底默认值（防止无图层且画布异常）
     if not bbox or (bbox[0] == 0 and bbox[1] == 0):

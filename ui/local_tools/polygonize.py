@@ -21,6 +21,7 @@ class RasterPolygonizeWidget(BaseLocalToolWidget):
         layer_group = QGroupBox("1. 输入单波段/分类栅格")
         layer_v = QVBoxLayout(layer_group)
         self.layer_combo = QgsMapLayerComboBox()
+        self.layer_combo.setObjectName("layer_combo")
         self.layer_combo.setFilters(RASTER_LAYER_FILTER)
         layer_v.addWidget(self.layer_combo)
         layout.addWidget(layer_group)
@@ -28,7 +29,8 @@ class RasterPolygonizeWidget(BaseLocalToolWidget):
         param_group = QGroupBox("2. 过滤与转换参数")
         param_grid = QGridLayout(param_group)
         param_grid.addWidget(QLabel("过滤孤立碎斑阈值 (像元数):"), 0, 0)
-        self.spin_sieve = QSpinBox(); self.spin_sieve.setRange(0, 500); self.spin_sieve.setValue(4)
+        self.spin_sieve = QSpinBox(); self.spin_sieve.setObjectName("spin_sieve")
+        self.spin_sieve.setRange(0, 500); self.spin_sieve.setValue(4)
         param_grid.addWidget(self.spin_sieve, 0, 1)
         layout.addWidget(param_group)
 
@@ -48,12 +50,17 @@ class RasterPolygonizeWidget(BaseLocalToolWidget):
         if not layer:
             QMessageBox.warning(self, "提示", "请选择栅格图层")
             return
+        self.mark_run_started()
         self.status_label.setText("正在提取矢量多边形...")
         QApplication.processEvents()
         try:
-            raster_polygonize(layer.source(), self.spin_sieve.value())
+            out_path = raster_polygonize(layer.source(), self.spin_sieve.value())
             self.status_label.setText("矢量化成功！已添加到图层列表")
+            self.record_local_run(
+                "ok", summary=f"栅格矢量化 (碎斑过滤 {self.spin_sieve.value()})",
+                output_paths=[out_path])
             QMessageBox.information(self, "成功", "栅格已转为矢量 Polygon 图斑！")
         except Exception as e:
             self.status_label.setText("矢量化失败")
+            self.record_local_run("failed", error=str(e))
             QMessageBox.critical(self, "错误", f"转换失败: {e}")

@@ -38,6 +38,7 @@ from qgis.PyQt.QtCore import QVariant, QCoreApplication
 from qgis.utils import iface
 
 from ...core.logger import get_logger
+from ...core import spatial_scope
 
 
 logger = get_logger("tools.skills.ai_tasks")
@@ -46,8 +47,15 @@ def _sanitize_ai_task_extent(layer: QgsRasterLayer, extent=None, extent_crs=None
     canvas = iface.mapCanvas() if iface else None
 
     if extent is None:
-        extent = canvas.extent() if canvas else layer.extent()
-        extent_crs = canvas.mapSettings().destinationCrs() if canvas else layer.crs()
+        # 兜底：调用方未显式传入范围时，优先用主页框选的范围，
+        # 而不是直接退回当前地图视口。
+        scoped_rect, scoped_crs = spatial_scope.get_active_extent()
+        if scoped_rect is not None:
+            extent = scoped_rect
+            extent_crs = extent_crs or scoped_crs
+        else:
+            extent = canvas.extent() if canvas else layer.extent()
+            extent_crs = canvas.mapSettings().destinationCrs() if canvas else layer.crs()
     if extent_crs is None:
         extent_crs = layer.crs()
 

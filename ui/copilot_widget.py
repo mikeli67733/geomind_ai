@@ -26,10 +26,33 @@ from qgis.core import QgsProject, QgsRasterLayer, QgsVectorLayer, QgsApplication
 
 from ..api.copilot_task import BackendCopilotTask
 from ..core.exceptions import ExtentTooLargeError
+from ..core.history import history_store
+from ..core.logger import get_logger
+from ..utils.extent_tool import ExtentSelectTool
 from .theme import (
     BTN_CLEAR_QSS, BTN_STOP_QSS, BTN_KEY_QSS, BTN_TOOLS_QSS,
     BTN_SEND_QSS, CHAT_HISTORY_QSS, INPUT_CARD_QSS, MENU_QSS,
 )
+
+logger = get_logger(__name__)
+
+
+def _layer_icon(layer) -> str:
+    """Type marker for the layer picker menu."""
+    from qgis.core import QgsVectorLayer
+    if isinstance(layer, QgsRasterLayer):
+        return "🖼"
+    if isinstance(layer, QgsVectorLayer):
+        from qgis.core import QgsWkbTypes
+        geom = layer.geometryType()
+        if geom == QgsWkbTypes.PointGeometry:
+            return "📍"
+        if geom == QgsWkbTypes.LineGeometry:
+            return "📏"
+        if geom == QgsWkbTypes.PolygonGeometry:
+            return "⬡"
+        return "🗂"
+    return "🗂"
 
 # 内部技能函数名的展示文案统一由 tools.skill_registry 提供
 from ..tools.skill_registry import skill_label as _skill_registry_label
@@ -97,6 +120,7 @@ class LlmCopilotWidget(QWidget):
         self._current_assistant_item = None
         self._current_progress_item_id = None
         self._consecutive_tool_calls: list = []
+        self._chat_session_dir = None   # history/copilot/<timestamp>/ folder
 
         # 核心性能优化：UI 渲染节流时间戳
         self._last_render_ts = 0.0
@@ -119,7 +143,7 @@ class LlmCopilotWidget(QWidget):
         top_bar.setContentsMargins(2, 0, 2, 0)
         top_bar.setSpacing(6)
 
-        self.clear_btn = QPushButton("清空会话")
+        self.clear_btn = QPushButton("新建会话")
         self.clear_btn.setToolTip("清空历史记录并开启新会话")
         self.clear_btn.setStyleSheet(BTN_CLEAR_QSS)
         self.clear_btn.clicked.connect(self._clear_and_new_session)
@@ -132,6 +156,8 @@ class LlmCopilotWidget(QWidget):
         self.stop_btn.clicked.connect(self._stop_current_task)
         top_bar.addWidget(self.stop_btn)
 
+        top_bar.addStretch()
+
         self.disclaimer_label = QLabel(" ⚠️ 模型可能出错，请提前保存数据 ")
         self.disclaimer_label.setStyleSheet(
             "QLabel { background-color: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; "
@@ -139,7 +165,6 @@ class LlmCopilotWidget(QWidget):
         )
         self.disclaimer_label.setAlignment(Qt.AlignCenter)
         top_bar.addWidget(self.disclaimer_label)
-        top_bar.addStretch()
         layout.addLayout(top_bar)
 
         # -- 会话浏览区 --
@@ -167,17 +192,27 @@ class LlmCopilotWidget(QWidget):
         bottom_toolbar = QHBoxLayout()
         bottom_toolbar.setSpacing(6)
 
-        self.btn_key = QPushButton("🔑 账号 / 额度")
-        self.btn_key.setToolTip("管理登录凭证及账户额度")
-        self.btn_key.setStyleSheet(BTN_KEY_QSS)
-        self.btn_key.clicked.connect(self.dock.show_account_page)
-        bottom_toolbar.addWidget(self.btn_key)
+        # self.btn_key = QPushButton("🔑 账号 / 额度")
+        # self.btn_key.setToolTip("管理登录凭证及账户额度")
+        # self.btn_key.setStyleSheet(BTN_KEY_QSS)
+        # self.btn_key.clicked.connect(self.dock.show_account_page)
+        # bottom_toolbar.addWidget(self.btn_key)
+        self.btn_select = QPushButton("🗺 图层 / 范围 ▾")
+        self.btn_select.setToolTip("选择解译图层并框选范围（全局生效，AI 解译页自动使用）")
+        self.btn_select.setStyleSheet(BTN_TOOLS_QSS)
+        self.btn_select.clicked.connect(self._show_selection_menu)
+        bottom_toolbar.addWidget(self.btn_select)
 
         self.btn_tools = QPushButton("🧰 Tools 遥感工具箱 ▾")
         self.btn_tools.setToolTip("选择本地 10 大免联网工具或 8 大云端 AI 专项解译")
         self.btn_tools.setStyleSheet(BTN_TOOLS_QSS)
         self._build_tools_menu()
         bottom_toolbar.addWidget(self.btn_tools)
+
+        # self.selection_chip = QLabel("🗺 未选图层 · 未框选范围")
+        # self.selection_chip.setObjectName("noticeBanner")
+        # self.selection_chip.setToolTip("主页全局图层/范围选择状态，可点击「图层 / 范围」修改")
+        # bottom_toolbar.addWidget(self.selection_chip)
 
         bottom_toolbar.addStretch()
 
@@ -229,6 +264,81 @@ class LlmCopilotWidget(QWidget):
 
         self.btn_tools.setMenu(tools_menu)
 
+    # -- 主页全局「图层 / 范围」选择 -------------------------------------------
+
+    def _selection_chip_text(self) -> str:
+        layer = getattr(self.dock, "global_layer", None)
+        extent = getattr(self.dock, "global_extent", None)
+        layer_text = layer.name() if layer is not None else "未选图层"
+        if extent is not None:
+            extent_text = (
+                f"范围 X[{extent.xMinimum():.0f}–{extent.xMaximum():.0f}] "
+                f"Y[{extent.yMinimum():.0f}–{extent.yMaximum():.0f}]")
+        else:
+            extent_text = "未框选范围"
+        return f"🗺 {layer_text} · {extent_text}"
+
+    def update_selection_chip(self):
+        """Refresh the global-selection status chip, if it exists in the UI."""
+        if hasattr(self, "selection_chip"):
+            self.selection_chip.setText(self._selection_chip_text())
+        else:
+            self._show_selection_hint(self._selection_chip_text())
+
+    def _show_selection_hint(self, text: str):
+        """Transient status hint; falls back to the brand subtitle label."""
+        if hasattr(self, "selection_chip"):
+            self.selection_chip.setText(text)
+        else:
+            self.dock.subtitle_label.setText(text)
+
+    def _show_selection_menu(self):
+        """Pop up the dynamic layer/extent picker menu."""
+        menu = QMenu(self)
+        menu.setStyleSheet(MENU_QSS)
+
+        head = menu.addAction(self._selection_chip_text())
+        head.setEnabled(False)
+        menu.addSeparator()
+
+        layer_menu = menu.addMenu("📄 选择图层")
+        layer_menu.setStyleSheet(MENU_QSS)
+        layers = list(QgsProject.instance().mapLayers().values())
+        current_layer = getattr(self.dock, "global_layer", None)
+        for layer in layers:
+            icon = _layer_icon(layer)
+            mark = "✔  " if layer is current_layer else ""
+            suffix = "" if icon else "  (非栅格)"
+            act = layer_menu.addAction(f"{mark}{icon} {layer.name()}{suffix}")
+            act.triggered.connect(
+                lambda chk=False, ly=layer: self._select_global_layer(ly))
+        if not layers:
+            empty = layer_menu.addAction("（工程中暂无图层）")
+            empty.setEnabled(False)
+
+        drag_act = menu.addAction("🐾 拖拽框选范围")
+        drag_act.triggered.connect(self._start_extent_select)
+        view_act = menu.addAction("🌸 使用当前视图范围")
+        view_act.triggered.connect(self._use_view_extent)
+
+        menu.exec_(self.btn_select.mapToGlobal(self.btn_select.rect().bottomLeft()))
+
+    def _select_global_layer(self, layer):
+        self.dock.set_global_selection(layer=layer)
+        logger.info("Global layer selected: %s", layer.name())
+
+    def _use_view_extent(self):
+        self.dock.set_global_selection(extent=self.dock.canvas.extent())
+
+    def _start_extent_select(self):
+        self._extent_select_tool = ExtentSelectTool(self.dock.canvas)
+        self._extent_select_tool.extentSelected.connect(self._on_global_extent_selected)
+        self.dock.canvas.setMapTool(self._extent_select_tool)
+        self._show_selection_hint("🐾 请在地图上按住左键拖拽框选范围…")
+
+    def _on_global_extent_selected(self, rect):
+        self.dock.set_global_selection(extent=rect)
+
     # -- 交互式链接与折叠事件分发 --------------------------------------------
 
     def _on_anchor_clicked(self, url: QUrl):
@@ -268,9 +378,9 @@ class LlmCopilotWidget(QWidget):
         html_blocks = [
             "<div style='background-color:#f8fafc; border:1px solid #e2e8f0; "
             "padding:12px 16px; margin:4px 0 10px 0; color:#334155; font-size:13px; line-height:1.6;'>"
-            "<div style='font-weight:700; color:#0f172a; font-size:14px; margin-bottom:6px;'>"
-            "🛰️ GeoMind AI Copilot</div>"
-            "<div style='margin-bottom:6px;'>我是您的智能遥感与 GIS 助手，您可以直接在下方输入自然语言指令。</div>"
+            # "<div style='font-weight:700; color:#0f172a; font-size:14px; margin-bottom:6px;'>"
+            # "🤖 GeoMind AI Copilot</div>"
+            "<div style='margin-bottom:6px;'>🤖 我是您的智能遥感与 GIS 助手，您可以直接在下方输入自然语言指令。</div>"
             "<div><span style='background:#eff6ff; color:#1d4ed8; padding:2px 6px; font-size:11px; border:1px solid #bfdbfe;'>计算影像 NDVI</span> "
             "<span style='background:#eff6ff; color:#1d4ed8; padding:2px 6px; font-size:11px; border:1px solid #bfdbfe;'>水体提取与矢量化</span> "
             "<span style='background:#eff6ff; color:#1d4ed8; padding:2px 6px; font-size:11px; border:1px solid #bfdbfe;'>地斑缓冲分析</span></div></div>"
@@ -403,6 +513,75 @@ class LlmCopilotWidget(QWidget):
         self._active_ai_tasks.clear()
         self._render_chat_ui(force=True)
 
+    # -- 会话持久化（历史记录 / 回溯） ---------------------------------------
+
+    def _append_chat(self, msg: dict, extra: dict = None):
+        """Append to in-memory history and persist to the Copilot session folder.
+
+        ``extra`` carries structured metadata (e.g. ``result_path`` of an AI
+        interpretation run) so the history page can show the actual outputs.
+        """
+        self.chat_history.append(msg)
+        try:
+            if self._chat_session_dir is None:
+                self._chat_session_dir = history_store.new_session_dir("copilot")
+            payload = {
+                "role": msg.get("role", ""),
+                "content": msg.get("content") or "",
+            }
+            if extra:
+                payload.update(extra)
+            history_store.append_message(self._chat_session_dir, payload)
+        except Exception as exc:
+            logger.debug("Failed to persist chat message: %s", exc)
+
+    def load_chat_session(self, session_dir: str):
+        """Restore a saved Copilot session into the chat view for re-running.
+
+        Rebuilds the visible conversation from the session jsonl and keeps the
+        session folder open so follow-up messages append to the same record.
+        """
+        if not session_dir:
+            return
+        messages = history_store.read_session_chat(session_dir)
+        if not messages:
+            return
+        self.finalize_chat_session()
+        self._progress_timer.stop()
+        self.chat_history = []
+        self.display_items = []
+        self._active_ai_tasks.clear()
+        self._consecutive_tool_calls = []
+        self._current_assistant_item = None
+        self._current_progress_item_id = None
+        for m in messages:
+            role = m.get("role", "")
+            content = m.get("content") or ""
+            if role == "user":
+                self.display_items.append(
+                    {"id": f"hist_user_{time.time()}", "role": "user", "content": content})
+                self.chat_history.append({"role": "user", "content": content})
+            elif role == "assistant":
+                self.display_items.append({
+                    "id": f"hist_asst_{time.time()}", "role": "assistant",
+                    "reasoning": "", "round_reasoning": "",
+                    "reasoning_collapsed": True, "tools": [], "tools_collapsed": True,
+                    "content": content, "round_content": "",
+                })
+                self.chat_history.append({"role": "assistant", "content": content})
+        self._chat_session_dir = session_dir
+        self._reset_btn()
+        self._render_chat_ui(force=True)
+
+    def finalize_chat_session(self):
+        """Close the current chat session so the history page sees it complete."""
+        if self._chat_session_dir:
+            try:
+                history_store.finalize_session(self._chat_session_dir)
+            except Exception as exc:
+                logger.debug("Failed to finalize chat session: %s", exc)
+            self._chat_session_dir = None
+
     def _clear_and_new_session(self):
         if self._llm_task is not None or len(self._active_ai_tasks) > 0:
             reply = QMessageBox.question(
@@ -414,6 +593,7 @@ class LlmCopilotWidget(QWidget):
                 return
             self._stop_current_task()
         self._progress_timer.stop()
+        self.finalize_chat_session()
         self.chat_history = []
         self._consecutive_tool_calls = []
         self._active_ai_tasks.clear()
@@ -480,7 +660,7 @@ class LlmCopilotWidget(QWidget):
 
         user_msg_id = f"user_{time.time()}"
         self.display_items.append({"id": user_msg_id, "role": "user", "content": text})
-        self.chat_history.append({"role": "user", "content": text})
+        self._append_chat({"role": "user", "content": text})
 
         self._current_assistant_item = {
             "id": f"asst_{time.time()}",
@@ -560,7 +740,7 @@ class LlmCopilotWidget(QWidget):
                 "tool_calls": tool_calls,
                 "reasoning_content": reasoning_val,
             }
-            self.chat_history.append(asst_msg)
+            self._append_chat(asst_msg)
 
             self._current_assistant_item["round_reasoning"] = ""
             self._current_assistant_item["round_content"] = ""
@@ -587,7 +767,7 @@ class LlmCopilotWidget(QWidget):
                     tool_record["result"] = str(e)
                     res = f"执行报错: {e}"
 
-                self.chat_history.append({
+                self._append_chat({
                     "tool_call_id": tc["id"],
                     "role": "tool",
                     "name": fn_name,
@@ -611,7 +791,7 @@ class LlmCopilotWidget(QWidget):
                 }
                 if round_reasoning:
                     asst_msg["reasoning_content"] = round_reasoning
-                self.chat_history.append(asst_msg)
+                self._append_chat(asst_msg)
 
             self._current_assistant_item["round_content"] = ""
             self._current_assistant_item["round_reasoning"] = ""
@@ -653,8 +833,14 @@ class LlmCopilotWidget(QWidget):
         # 1. 云端深度解译并发任务提交
         if fn_name in ("skill_ai_extract_feature", "skill_ai_sam3_extract", "skill_ai_change_detection"):
             canvas = self.dock.canvas
-            extent = canvas.extent()
-            extent_crs = canvas.mapSettings().destinationCrs()
+            _, global_extent = self.dock.global_selection()
+            if global_extent is not None:
+                # 优先使用主页框选/选定的范围，而不是当前地图视口。
+                extent = global_extent
+                extent_crs = canvas.mapSettings().destinationCrs()
+            else:
+                extent = canvas.extent()
+                extent_crs = canvas.mapSettings().destinationCrs()
 
             target_layer_name = args.get("layer_name") or args.get("layer_t1")
             target_layer = None
@@ -830,10 +1016,10 @@ class LlmCopilotWidget(QWidget):
                 "role": "assistant",
                 "content": f"🎉 **【{semantic_name}】完成！** 已自动为您加载图层：`{layer_name}`"
             })
-            self.chat_history.append({
+            self._append_chat({
                 "role": "system",
                 "content": f"【系统通知】后台任务完成：地物类型为【{semantic_name}】的图层已成功加载至工程，图层准确名称为: '{layer_name}'。"
-            })
+            }, extra={"result_path": result_path, "result_layer": layer_name})
         else:
             self.display_items.append({
                 "id": f"ai_fail_{time.time()}",
@@ -851,7 +1037,7 @@ class LlmCopilotWidget(QWidget):
                 self._current_progress_item_id = None
 
             # 1. 注入一条系统自动推进指令（明确告知模型图层已就绪，继续执行后续步骤）
-            self.chat_history.append({
+            self._append_chat({
                 "role": "user",
                 "content": "【系统自动推进】本批次所有后台解译图层均已加载完毕。请检查用户最初的需求中是否还有未完成的后续步骤（如缓冲区分析、空间相交叠置、面积统计等），请立即调用相应工具继续执行；如果已全部完成，请直接输出分析总结汇报。"
             })

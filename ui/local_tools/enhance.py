@@ -21,6 +21,7 @@ class ImageEnhanceWidget(BaseLocalToolWidget):
         layer_group = QGroupBox("1. 输入多波段栅格")
         layer_v = QVBoxLayout(layer_group)
         self.layer_combo = QgsMapLayerComboBox()
+        self.layer_combo.setObjectName("layer_combo")
         self.layer_combo.setFilters(RASTER_LAYER_FILTER)
         layer_v.addWidget(self.layer_combo)
         layout.addWidget(layer_group)
@@ -28,15 +29,19 @@ class ImageEnhanceWidget(BaseLocalToolWidget):
         param_group = QGroupBox("2. RGB 通道波段分配")
         param_grid = QGridLayout(param_group)
         param_grid.addWidget(QLabel("红通道 (R):"), 0, 0)
-        self.spin_r = QSpinBox(); self.spin_r.setRange(1, 64); self.spin_r.setValue(4)
+        self.spin_r = QSpinBox(); self.spin_r.setObjectName("spin_r")
+        self.spin_r.setRange(1, 64); self.spin_r.setValue(4)
         param_grid.addWidget(self.spin_r, 0, 1)
         param_grid.addWidget(QLabel("绿通道 (G):"), 1, 0)
-        self.spin_g = QSpinBox(); self.spin_g.setRange(1, 64); self.spin_g.setValue(3)
+        self.spin_g = QSpinBox(); self.spin_g.setObjectName("spin_g")
+        self.spin_g.setRange(1, 64); self.spin_g.setValue(3)
         param_grid.addWidget(self.spin_g, 1, 1)
         param_grid.addWidget(QLabel("蓝通道 (B):"), 2, 0)
-        self.spin_b = QSpinBox(); self.spin_b.setRange(1, 64); self.spin_b.setValue(2)
+        self.spin_b = QSpinBox(); self.spin_b.setObjectName("spin_b")
+        self.spin_b.setRange(1, 64); self.spin_b.setValue(2)
         param_grid.addWidget(self.spin_b, 2, 1)
         self.cb_stretch = QCheckBox("应用 2% ~ 98% 动态对比度拉伸增强画质")
+        self.cb_stretch.setObjectName("cb_stretch")
         self.cb_stretch.setChecked(True)
         param_grid.addWidget(self.cb_stretch, 3, 0, 1, 2)
         layout.addWidget(param_group)
@@ -57,15 +62,20 @@ class ImageEnhanceWidget(BaseLocalToolWidget):
         if not layer:
             QMessageBox.warning(self, "提示", "请选择栅格图层")
             return
+        self.mark_run_started()
         self.status_label.setText("正在合成与拉伸波段...")
         QApplication.processEvents()
         try:
-            image_enhance(
+            out_path = image_enhance(
                 layer.source(), self.spin_r.value(), self.spin_g.value(),
                 self.spin_b.value(), self.cb_stretch.isChecked(),
             )
             self.status_label.setText("生成成功！已加载增强影像")
+            self.record_local_run(
+                "ok", summary=f"假彩色增强 (RGB {self.spin_r.value()}-{self.spin_g.value()}-{self.spin_b.value()})",
+                output_paths=[out_path])
             QMessageBox.information(self, "成功", "假彩色增强影像生成完成！")
         except Exception as e:
             self.status_label.setText("生成失败")
+            self.record_local_run("failed", error=str(e))
             QMessageBox.critical(self, "错误", f"合成失败: {e}")
