@@ -291,11 +291,13 @@ class HistoryPage(QWidget):
             self._records += history_store.list_records(
                 page_key=page_key or None, keyword=keyword)
         if not page_key or page_key == "copilot":
-            if not keyword:
-                for session in history_store.list_copilot_sessions():
-                    session = dict(session)
-                    session["_type"] = "copilot"
-                    self._records.append(session)
+            for session in history_store.list_copilot_sessions():
+                if keyword and keyword.lower() not in (
+                        session.get("keywords") or "").lower():
+                    continue
+                session = dict(session)
+                session["_type"] = "copilot"
+                self._records.append(session)
         self._records.sort(
             key=lambda r: (r.get("created_at") or r.get("last_used_at") or ""),
             reverse=True,
@@ -359,9 +361,9 @@ class HistoryPage(QWidget):
     def _make_list_item(self, record: dict) -> QListWidgetItem:
         if record.get("_type") == "copilot":
             icon = "💬"
-            title = "AI 对话"
+            title = record.get("keywords") or "AI 对话"
             count = int(record.get("message_count", 0) or 0)
-            summary = f"{count} 条消息"
+            summary = f"{title} · {count} 条消息"
         else:
             status = record.get("status", "")
             icon = _STATUS_ICONS.get(status, "•")
@@ -527,7 +529,7 @@ class HistoryPage(QWidget):
             if m.get("role") in ("user", "assistant") or m.get("result_path")
         ]
         blocks = [
-            "<h2 style='margin-bottom:2px;'>💬 AI 对话会话</h2>",
+            f"<h2 style='margin-bottom:2px;'>💬 {html.escape(record.get('keywords') or 'AI 对话')}</h2>",
             f"<p style='color:#94a3b8;'>{_fmt_time_relative(record.get('created_at', ''))} · "
             f"{len(shown)} 条消息</p>",
         ]

@@ -118,24 +118,41 @@ def calc_spectral_index(
 # ===========================================================================
 
 def run_pca(source_path: str, n_comp: int = 3) -> str:
-    """Perform PCA (principal component analysis) on a multi-band raster."""
+    """Perform PCA (principal component analysis) on a multi-band raster.
+
+    用波段协方差矩阵特征分解代替全矩阵 SVD：内存占用从约 3-4 份
+    N×b 数组降到 1 份 N×b + 一个临时缓冲，大影像耗时显著下降；
+    同时把 n_comp 钳制到波段数以内，避免原 SVD 切片越界。
+    """
     ds = gdal.Open(source_path)
     if ds is None:
         raise RuntimeError(f"Cannot open raster: {source_path}")
 
     bands = [ds.GetRasterBand(i + 1).ReadAsArray().astype(np.float32) for i in range(ds.RasterCount)]
+    b = len(bands)
     h, w = bands[0].shape
-    X = np.stack(bands, axis=-1).reshape(-1, len(bands))
+    n_comp = max(1, min(n_comp, b))
 
-    mean = np.mean(X, axis=0)
-    X_centered = X - mean
-    u, s, vt = np.linalg.svd(X_centered, full_matrices=False)
-    pcs = np.dot(X_centered, vt.T[:, :n_comp])
+    means = np.array([arr.mean() for arr in bands], dtype=np.float32)
+    # 协方差矩阵 b×b：逐对累加，避免构造 N×b 的居中矩阵
+    cov = np.zeros((b, b), dtype=np.float64)
+    for i in range(b):
+        ci = bands[i] - means[i]
+        for j in range(i, b):
+            v = float(np.mean(ci * (bands[j] - means[j])))
+            cov[i, j] = cov[j, i] = v
+
+    # 特征分解：最大特征值对应的特征向量即主成分方向
+    evals, evecs = np.linalg.eigh(cov)
+    order = np.argsort(evals)[::-1][:n_comp]
 
     out_file = os.path.join(tempfile.gettempdir(), f"PCA_{n_comp}B_{_timestamp()}.tif")
     out_bands = np.zeros((h, w, n_comp), dtype=np.float32)
-    for i in range(n_comp):
-        out_bands[:, :, i] = pcs[:, i].reshape(h, w)
+    for k, idx in enumerate(order):
+        comp = np.zeros((h, w), dtype=np.float32)
+        for i in range(b):
+            comp += evecs[i, idx] * (bands[i] - means[i])
+        out_bands[:, :, k] = comp
 
     _save_raster(out_file, out_bands, ds.GetGeoTransform(), ds.GetProjection(), dtype=gdal.GDT_Float32)
     ds = None

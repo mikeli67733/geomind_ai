@@ -55,6 +55,8 @@ register("skill_fetch_era5_climate", _FT.skill_fetch_era5_climate,
 
 register("skill_raster_threshold", _A.skill_raster_threshold,
          "栅格指数阈值二值化提取", "local")
+register("skill_calc_spectral_index", _A.skill_calc_spectral_index,
+         "计算 NDVI/NDWI/NDBI 等物理光谱指数", "local")
 register("skill_run_pca", _A.skill_run_pca,
          "执行主成分分析 (PCA)", "local")
 register("skill_dem_analysis", _A.skill_dem_analysis,

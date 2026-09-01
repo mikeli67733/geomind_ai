@@ -13,7 +13,6 @@ from io import BytesIO
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, Dict, Any, List
 
-import requests
 import numpy as np
 from PIL import Image
 from osgeo import gdal, ogr, osr
@@ -38,7 +37,7 @@ from qgis.utils import iface
 
 from ...core.logger import get_logger
 
-from .common import _get_target_bbox
+from .common import _get_target_bbox, _HTTP
 
 
 logger = get_logger("tools.skills.fetch_thematic")
@@ -168,7 +167,7 @@ def skill_fetch_era5_climate(place_name: str = "当前视口", days_back: int = 
             "hourly": "temperature_2m,precipitation,windspeed_10m,surface_pressure",
             "timezone": "auto"
         }
-        resp = requests.get(url, params=params, timeout=12)
+        resp = _HTTP.get(url, params=params, timeout=12)
         if resp.status_code == 200:
             data = resp.json()
             hourly = data.get("hourly", {})

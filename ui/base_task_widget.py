@@ -92,10 +92,6 @@ class BaseTaskWidget(QWidget):
         self.select_extent_btn = QPushButton("🐾 拖拽框选范围")
         self.select_extent_btn.clicked.connect(self._activate_extent_tool)
         btn_row.addWidget(self.select_extent_btn)
-
-        self.use_canvas_extent_btn = QPushButton("🌸 当前视图范围")
-        self.use_canvas_extent_btn.clicked.connect(self._use_canvas_extent)
-        btn_row.addWidget(self.use_canvas_extent_btn)
         extent_layout.addLayout(btn_row)
 
         self.extent_label = QLabel("尚未选择解译范围")
@@ -253,9 +249,6 @@ class BaseTaskWidget(QWidget):
         self.canvas.setMapTool(self.extent_tool)
         self.status_label.setText("请在地图上按住左键拖拽框选范围（右键/Esc取消）")
 
-    def _use_canvas_extent(self):
-        self._on_extent_selected(self.canvas.extent())
-
     def _on_extent_selected(self, rect: QgsRectangle):
         self.selected_extent = rect
         self._extent_user_picked = True
@@ -283,12 +276,12 @@ class BaseTaskWidget(QWidget):
 
         # Adopt the home-page global selection if nothing is set here yet.
         self._apply_global_selection()
-        # Hard fallback right before running: never fall through to the
-        # canvas view extent when the user picked a global extent on the
-        # home page but this page's own extent is still empty.
-        if (self.selected_extent is None
-                and getattr(self.dock, "global_extent", None) is not None):
-            self._on_extent_selected(self.dock.global_extent)
+        # 有框选范围用框选范围（主页全局框选优先），没有则使用当前窗口范围。
+        if self.selected_extent is None:
+            if getattr(self.dock, "global_extent", None) is not None:
+                self._on_extent_selected(self.dock.global_extent)
+            else:
+                self._on_extent_selected(self.canvas.extent())
 
         layer_t1 = self.layer_combo_t1.currentLayer()
         if layer_t1 is None or not isinstance(layer_t1, QgsRasterLayer):

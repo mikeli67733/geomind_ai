@@ -66,6 +66,8 @@ API_USER_ME = "/api/v1/user/me"
 API_PAYMENT_REDEEM = "/api/v1/payment/redeem"
 API_CHANGE_PASSWORD = "/api/v1/auth/change-password"
 API_COPILOT_CHAT = "/api/v1/copilot/chat"
+# 预留：远端后端模式下的图层上传端点（当前后端尚未实现该路由）
+API_COPILOT_UPLOAD = "/api/v1/copilot/upload"
 
 # ===========================================================================
 # External service configuration

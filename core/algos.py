@@ -83,14 +83,26 @@ def compute_spectral_index(
 def convolve3x3(arr: np.ndarray, kernel: np.ndarray) -> np.ndarray:
     """Apply a 3x3 convolution on the valid region (border stays zero).
 
-    The kernel is applied with the same orientation as the original
-    nested-loop implementation; inputs are promoted to float32.
+    Vectorized as 9 shifted-window accumulations instead of a per-pixel
+    Python loop — semantically identical to the original nested loop
+    (window ⊙ kernel, no flip, borders kept at zero) but orders of
+    magnitude faster on large rasters.
     """
     arr = arr.astype(np.float32)
+    h, w = arr.shape
+    padded = np.pad(arr, 1, mode="constant")
+    k = np.asarray(kernel, dtype=np.float32).ravel()
     out = np.zeros_like(arr)
-    for r in range(1, arr.shape[0] - 1):
-        for c in range(1, arr.shape[1] - 1):
-            out[r, c] = np.sum(arr[r - 1 : r + 2, c - 1 : c + 2] * kernel)
+    idx = 0
+    for di in range(3):
+        for dj in range(3):
+            out += padded[di:di + h, dj:dj + w] * k[idx]
+            idx += 1
+    # 与原实现一致：边界一圈保持 0
+    out[0, :] = 0
+    out[-1, :] = 0
+    out[:, 0] = 0
+    out[:, -1] = 0
     return out
 
 
@@ -115,8 +127,13 @@ def kmeans_labels(
     labels = np.zeros(X.shape[0], dtype=int)
 
     for _ in range(max_iters):
-        dists = np.linalg.norm(X[:, None, :] - centers[None, :, :], axis=-1)
-        labels = np.argmin(dists, axis=-1)
+        # ||x-c||² = ||x||² - 2x·c + ||c||²：避免构造 N×k×b 的中间张量
+        # （原实现 np.linalg.norm(X[:,None,:]-centers[None,:,:]) 在大影像上
+        #  会多出几百 MB 临时内存）
+        x2 = np.einsum("ij,ij->i", X, X)
+        c2 = np.einsum("kj,kj->k", centers, centers)
+        dists2 = x2[:, None] - 2.0 * (X @ centers.T) + c2[None, :]
+        labels = np.argmin(dists2, axis=-1)
         new_centers = np.array([
             X[labels == j].mean(axis=0) if np.any(labels == j) else centers[j]
             for j in range(k)

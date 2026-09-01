@@ -46,7 +46,7 @@ logger = get_logger("tools.skills.qgis_ops")
 def qgis_search_tools(query: str, top_k: int = 5) -> str:
     """语义搜索 QGIS 原生处理算法。"""
     try:
-        from ....utils.qgis_indexer import QgisToolVectorIndexer
+        from ...utils.qgis_indexer import QgisToolVectorIndexer
         indexer = QgisToolVectorIndexer()
         results = indexer.search(query, top_k=top_k)
         if not results:
@@ -287,7 +287,12 @@ def execute_pyqgis_code(python_code: str) -> str:
     except Exception as e:
         sys.stdout = stdout_backup
         err_detail = traceback.format_exc()
-        return f"❌ PyQGIS 代码执行报错: {e}\n详细堆栈:\n{err_detail}"
+        return (
+            f"❌ PyQGIS 代码执行报错: {e}\n详细堆栈:\n{err_detail}\n\n"
+            "💡 恢复建议：若手写脚本有困难，请改用结构化算子链 "
+            "qgis_search_tools → qgis_get_tool_params → qgis_run_algorithm "
+            "完成同类计算（无需写代码，系统自动按名称解析图层并加载结果图层）。"
+        )
 
     finally:
         if canvas:

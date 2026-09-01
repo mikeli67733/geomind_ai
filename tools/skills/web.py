@@ -39,6 +39,17 @@ from ...core.logger import get_logger
 
 
 logger = get_logger("tools.skills.web")
+
+#: 模块级共享会话（连接池复用），搜索/抓取需浏览器 UA 故不共用 common._HTTP
+_HTTP = requests.Session()
+_HTTP.headers.update({
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"),
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+})
+
+
 def skill_web_search(query: str, max_results: int = 5) -> str:
     """通用实时联网搜索工具（国内直连免Key免费版：Bing中国 + 百度双通道）。"""
     headers = {
@@ -54,7 +65,7 @@ def skill_web_search(query: str, max_results: int = 5) -> str:
         encoded_query = urllib.parse.quote(query)
         bing_url = f"https://cn.bing.com/search?q={encoded_query}&ensearch=0"
 
-        resp = requests.get(bing_url, headers=headers, timeout=8)
+        resp = _HTTP.get(bing_url, headers=headers, timeout=8)
         if resp.status_code == 200:
             raw_html = resp.text
             blocks = re.findall(r'<li class="b_algo"(.*?)</li>', raw_html, re.DOTALL)
@@ -83,7 +94,7 @@ def skill_web_search(query: str, max_results: int = 5) -> str:
     # 通道 2：百度搜索
     try:
         baidu_url = f"https://www.baidu.com/s?wd={urllib.parse.quote(query)}"
-        resp = requests.get(baidu_url, headers=headers, timeout=8)
+        resp = _HTTP.get(baidu_url, headers=headers, timeout=8)
         if resp.status_code == 200:
             raw_html = resp.text
             blocks = re.findall(r'<div class="[a-z0-9-_]*\s*c-container[^"]*"(.*?)</div>\s*</div>', raw_html, re.DOTALL)
@@ -118,7 +129,7 @@ def skill_fetch_webpage_content(url: str, max_chars: int = 2500) -> str:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        resp = requests.get(url, headers=headers, timeout=12)
+        resp = _HTTP.get(url, headers=headers, timeout=12)
         resp.encoding = resp.apparent_encoding or "utf-8"
 
         if resp.status_code != 200:

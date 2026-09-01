@@ -10,6 +10,7 @@ import json
 import math
 import tempfile
 import urllib.parse
+import concurrent.futures
 from html import unescape
 from io import BytesIO
 from datetime import datetime, timedelta
@@ -42,6 +43,24 @@ from ...core.logger import get_logger
 
 
 logger = get_logger("tools.skills.common")
+
+#: 模块级共享 HTTP 会话（连接池 + keep-alive），供各技能复用，
+#: 避免每次请求都重建 TCP/TLS 连接。
+_HTTP = requests.Session()
+_HTTP.headers.update({"User-Agent": "GeoMind-QGIS-Plugin/1.0"})
+
+
+def _fetch_tile(url: str) -> Optional[np.ndarray]:
+    """下载单张高程瓦片并解码为 RGB 数组；失败返回 None。"""
+    try:
+        r = _HTTP.get(url, timeout=8)
+        if r.status_code == 200:
+            return np.array(Image.open(BytesIO(r.content)).convert("RGB"))
+    except Exception:
+        return None
+    return None
+
+
 def _validate_bbox(bbox: List[float]) -> List[float]:
     """保证 BBox 处于合法全球经纬度范围内 [-180, 180], [-90, 90]。"""
     min_lon = max(-180.0, min(180.0, float(bbox[0])))
@@ -63,8 +82,7 @@ def _geocode_place_bbox(place_name: str) -> Optional[List[float]]:
     try:
         url = "https://nominatim.openstreetmap.org/search"
         params = {"q": place_name, "format": "json", "limit": 1}
-        headers = {"User-Agent": "GeoMind-QGIS-Plugin/1.0"}
-        r = requests.get(url, params=params, headers=headers, timeout=5)
+        r = _HTTP.get(url, params=params, timeout=5)
         if r.status_code == 200 and r.json():
             res = r.json()[0]
             bb = res.get("boundingbox")
@@ -83,57 +101,39 @@ def _geocode_place_bbox(place_name: str) -> Optional[List[float]]:
 def _get_target_bbox(place_name: str = "当前视口") -> Tuple[List[float], str]:
     """
     【空间视口提取】
-    1. 若指定地名：解析坐标并定位到该地名真实范围；
-    2. 若未指定地名：精确提取当前 QGIS 画布真实的可见范围矩形，不做多余截断。
+    不再按地名/地址解析范围，统一采用：
+    1. 优先使用主页框选的范围；
+    2. 否则精确提取当前 QGIS 画布真实的可见范围矩形，不做多余截断。
+    （place_name 参数仅为兼容保留，不再参与范围确定。）
     """
     canvas = iface.mapCanvas() if iface else None
     located_msg = ""
     bbox = None
 
-    # 1. 用户明确指定了具体地名
-    is_explicit_place = place_name and place_name not in (
-        "当前视口", "当前视图", "当前区域", "视口", "current", "", None
-    )
+    # 1. 优先使用主页框选的范围，其次才退回当前屏幕视口
+    scoped_rect, scoped_crs = spatial_scope.get_active_extent()
+    if scoped_rect is not None:
+        rect = scoped_rect
+        src_crs = scoped_crs or (canvas.mapSettings().destinationCrs() if canvas else None)
+        located_msg = "📍 已使用主页框选的范围\n"
+    elif canvas:
+        rect = canvas.extent()
+        src_crs = canvas.mapSettings().destinationCrs()
+    else:
+        rect = None
+        src_crs = None
 
-    if is_explicit_place:
-        bbox = _geocode_place_bbox(place_name)
-        if bbox:
-            located_msg = f"📍 已匹配目标地名范围：`{place_name}`\n"
-            if canvas:
-                src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
-                dest_crs = canvas.mapSettings().destinationCrs()
-                tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
-                rect = tr.transformBoundingBox(QgsRectangle(bbox[0], bbox[1], bbox[2], bbox[3]))
-                canvas.setExtent(rect)
-                canvas.refresh()
-        else:
-            located_msg = f"⚠️ 未能解析地名 `{place_name}`，已使用当前屏幕视口\n"
+    if rect is not None and src_crs is not None:
+        dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+        tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+        wgs_rect = tr.transformBoundingBox(rect)
 
-    # 2. 未指定地名：优先使用主页框选的范围，其次才退回当前屏幕视口
-    if bbox is None:
-        scoped_rect, scoped_crs = spatial_scope.get_active_extent()
-        if scoped_rect is not None:
-            rect = scoped_rect
-            src_crs = scoped_crs or (canvas.mapSettings().destinationCrs() if canvas else None)
-            located_msg = "📍 已使用主页框选的范围\n"
-        elif canvas:
-            rect = canvas.extent()
-            src_crs = canvas.mapSettings().destinationCrs()
-        else:
-            rect = None
-            src_crs = None
-
-        if rect is not None and src_crs is not None:
-            dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
-            tr = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
-            wgs_rect = tr.transformBoundingBox(rect)
-
-            bbox = [
-                round(wgs_rect.xMinimum(), 6),
-                round(wgs_rect.yMinimum(), 6),
-                round(wgs_rect.xMaximum(), 6),
-                round(wgs_rect.yMaximum(), 6),
-            ]
+        bbox = [
+            round(wgs_rect.xMinimum(), 6),
+            round(wgs_rect.yMinimum(), 6),
+            round(wgs_rect.xMaximum(), 6),
+            round(wgs_rect.yMaximum(), 6),
+        ]
 
     # 兜底默认值（防止无图层且画布异常）
     if not bbox or (bbox[0] == 0 and bbox[1] == 0):
@@ -182,15 +182,25 @@ def _download_and_decode_terrarium_tif(
         tile_size = 256
 
         full_image = np.zeros((rows * tile_size, cols * tile_size, 3), dtype=np.uint8)
-        headers = {"User-Agent": "GeoMind-QGIS-Plugin/1.0"}
 
+        # 并行下载全部瓦片（共享连接池 + 最多 16 并发），单张失败不影响整体
+        tile_jobs = []
         for j, y in enumerate(range(y_min, y_max + 1)):
             for i, x in enumerate(range(x_min, x_max + 1)):
-                url = f"https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{zoom}/{x}/{y}.png"
-                r = requests.get(url, headers=headers, timeout=8)
-                if r.status_code == 200:
-                    tile_img = np.array(Image.open(BytesIO(r.content)).convert("RGB"))
-                    full_image[j*tile_size:(j+1)*tile_size, i*tile_size:(i+1)*tile_size] = tile_img
+                url = (f"https://s3.amazonaws.com/elevation-tiles-prod/"
+                       f"terrarium/{zoom}/{x}/{y}.png")
+                tile_jobs.append((j, i, url))
+
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(16, len(tile_jobs))) as pool:
+            futures = {pool.submit(_fetch_tile, url): (j, i)
+                       for j, i, url in tile_jobs}
+            for fut in concurrent.futures.as_completed(futures):
+                j, i = futures[fut]
+                tile_img = fut.result()
+                if tile_img is not None:
+                    full_image[j*tile_size:(j+1)*tile_size,
+                               i*tile_size:(i+1)*tile_size] = tile_img
 
         R = full_image[:, :, 0].astype(np.float32)
         G = full_image[:, :, 1].astype(np.float32)

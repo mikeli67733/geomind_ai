@@ -122,7 +122,8 @@ class GeoMindApiClient:
         url = f"{self.server_url}{API_STATUS.format(task_id=task_id)}"
         params = {"model_key": model_key} if model_key else {}
         resp = self._client.get(
-            url, params=params, timeout=self.request_timeout, auth=True
+            url, params=params, timeout=self.request_timeout, auth=True,
+            retry_on_status=True,  # 瞬时 5xx 自动重试，避免长任务被一次抖动打断
         )
         self._check_response(resp, "查询任务状态")
         return resp.json()
@@ -134,7 +135,8 @@ class GeoMindApiClient:
         url = f"{self.server_url}{API_RESULT.format(task_id=task_id)}"
         params = {"model_key": model_key} if model_key else {}
         resp = self._client.get(
-            url, params=params, timeout=60, auth=True
+            url, params=params, timeout=180, auth=True,  # 结果文件可能较大，放宽超时
+            retry_on_status=True,
         )
         self._check_response(resp, "下载结果文件")
         with open(dest_path, "wb") as f:

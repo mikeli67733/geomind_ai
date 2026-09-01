@@ -39,6 +39,7 @@ from qgis.utils import iface
 from ...core.logger import get_logger
 
 from .layers import get_layer_by_name
+from ..raster_ops import calc_spectral_index
 
 
 logger = get_logger("tools.skills.analysis")
@@ -71,6 +72,88 @@ def skill_raster_threshold(layer_name: str, min_val: float, max_val: float = 1.0
         return f"已成功对 `{layer_name}` 完成阈值提取 [{min_val}, {max_val}]，二值化掩膜已上屏。"
     except Exception as e:
         return f"阈值提取失败: {e}"
+
+
+#: 各指数所需的波段角色 (b1, b2, b3)；b3 为 None 表示两波段指数
+_INDEX_BAND_ROLES = {
+    "NDVI": ("NIR", "RED", None),
+    "GNDVI": ("NIR", "GREEN", None),
+    "NDWI": ("GREEN", "NIR", None),
+    "MNDWI": ("GREEN", "SWIR1", None),
+    "NDBI": ("SWIR1", "NIR", None),
+    "NDMI": ("NIR", "SWIR1", None),
+    "NBR": ("NIR", "SWIR2", None),
+    "NDRE": ("NIR", "REDEDGE1", None),
+    "SAVI": ("NIR", "RED", None),
+    "FVC": ("NIR", "RED", None),
+    "EVI": ("NIR", "RED", "BLUE"),
+    "BSI": ("SWIR1", "RED", "NIR"),
+}
+
+#: Sentinel-2 全波段标准序号（插件 VRT 堆叠顺序：B01=1 ... B8A=9, B09=10, B11=11, B12=12）
+_S2_BAND_POS = {"BLUE": 2, "GREEN": 3, "RED": 4, "REDEDGE1": 5,
+                "NIR": 8, "SWIR1": 11, "SWIR2": 12}
+#: Landsat 型常见多光谱顺序兜底
+_LS_BAND_POS = {"BLUE": 2, "GREEN": 3, "RED": 4, "REDEDGE1": 5,
+                "NIR": 5, "SWIR1": 6, "SWIR2": 7}
+
+
+def skill_calc_spectral_index(
+    layer_name: str,
+    index_type: str = "NDVI",
+    threshold: Optional[float] = None,
+    band_nir: int = 0,
+    band_red: int = 0,
+    band_green: int = 0,
+    band_swir1: int = 0,
+) -> str:
+    """计算物理光谱指数（NDVI/NDWI/MNDWI/GNDVI/NDBI/NDRE/NBR/EVI 等）并加载结果图层。
+
+    波段自动匹配：≥11 波段按 Sentinel-2 标准顺序（B2蓝/B3绿/B4红/B5红边1/
+    B8近红外/B11SWIR1/B12SWIR2）；其余按 Landsat 型顺序兜底。
+    可通过 band_nir/band_red/band_green/band_swir1 显式指定波段号覆盖。
+    threshold 传入时输出 0/1 二值掩膜。
+    """
+    try:
+        layer = get_layer_by_name(layer_name, "raster")
+        band_count = layer.bandCount()
+        if band_count < 2:
+            return f"❌ 图层 `{layer_name}` 仅有 {band_count} 个波段，无法计算光谱指数。"
+
+        idx = (index_type or "NDVI").strip().upper()
+        if idx not in _INDEX_BAND_ROLES:
+            return (f"❌ 不支持的指数类型 `{idx}`。支持: "
+                    f"{', '.join(sorted(_INDEX_BAND_ROLES))}")
+
+        band_pos = _S2_BAND_POS if band_count >= 11 else _LS_BAND_POS
+        overrides = {
+            "NIR": band_nir, "RED": band_red,
+            "GREEN": band_green, "SWIR1": band_swir1,
+        }
+
+        def _resolve(role: str) -> int:
+            ov = overrides.get(role, 0)
+            if ov and 1 <= ov <= band_count:
+                return ov
+            base = band_pos.get(role, 1)
+            return base if 1 <= base <= band_count else 1
+
+        b1_role, b2_role, b3_role = _INDEX_BAND_ROLES[idx]
+        b1_idx = _resolve(b1_role)
+        b2_idx = _resolve(b2_role)
+        b3_idx = _resolve(b3_role) if b3_role else 1
+
+        out_path = calc_spectral_index(
+            layer.source(), idx.lower(), b1_idx, b2_idx, b3_idx, threshold,
+        )
+        band_desc = f"{b1_role}={b1_idx}, {b2_role}={b2_idx}"
+        if b3_role:
+            band_desc += f", {b3_role}={b3_idx}"
+        suffix = "（二值掩膜）" if threshold is not None else ""
+        return (f"✔ 已计算 **{idx}** 指数并加载图层{suffix}。"
+                f"波段映射: {band_desc}。")
+    except Exception as e:
+        return f"光谱指数计算失败: {e}"
 
 
 # ===========================================================================
@@ -290,12 +373,12 @@ def skill_vector_smooth(layer_name: str, tolerance: float = 1.0, iterations: int
     try:
         layer = get_layer_by_name(layer_name, "vector")
 
-        # 使用 QGIS 原生平滑算法
+        # 使用 QGIS 原生平滑算法（tolerance 即平滑偏移量）
         import processing
         params = {
             'INPUT': layer,
             'ITERATIONS': iterations,
-            'OFFSET': 0.25,
+            'OFFSET': tolerance,
             'MAX_ANGLE': 180,
             'OUTPUT': 'memory:'
         }
@@ -478,6 +561,21 @@ def skill_raster_polygonize(layer_name: str, sieve_size: int = 4) -> str:
             return f"❌ 无法打开栅格: {layer.source()}"
 
         src_band = src_ds.GetRasterBand(1)
+
+        # 自动过滤碎斑：矢量化前先对栅格做连通域筛分（小于 sieve_size 像元的碎斑并入邻域）
+        mem_ds = None
+        if sieve_size > 0:
+            try:
+                mem_ds = gdal.GetDriverByName("MEM").Create(
+                    "", src_ds.RasterXSize, src_ds.RasterYSize, 1, src_band.DataType)
+                mem_band = mem_ds.GetRasterBand(1)
+                mem_band.WriteArray(src_band.ReadAsArray())
+                gdal.SieveFilter(mem_band, None, mem_band, float(sieve_size), 8)
+                src_band = mem_band
+            except Exception:
+                mem_ds = None  # 筛分失败（如非整型波段）则退回原波段
+                src_band = src_ds.GetRasterBand(1)
+
         time_str = datetime.now().strftime("%H%M%S")
         out_shp = os.path.join(tempfile.gettempdir(), f"poly_{time_str}.shp")
 
@@ -497,6 +595,8 @@ def skill_raster_polygonize(layer_name: str, sieve_size: int = 4) -> str:
 
         dst_ds.FlushCache()
         dst_ds = None
+        if mem_ds is not None:
+            mem_ds = None
         src_ds = None
 
         out_vec_name = f"{layer_name}_矢量化图斑"

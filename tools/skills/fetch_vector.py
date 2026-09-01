@@ -37,7 +37,7 @@ from qgis.utils import iface
 
 from ...core.logger import get_logger
 
-from .common import _get_target_bbox
+from .common import _get_target_bbox, _HTTP
 
 
 logger = get_logger("tools.skills.fetch_vector")
@@ -86,16 +86,34 @@ def skill_fetch_osm_vector_data(
         out skel qt;
         """
 
-        headers = {"User-Agent": "GeoMind-QGIS-Plugin/1.0"}
         data = None
-        for server in OVERPASS_SERVERS:
+        # 并行探测多个 Overpass 服务器，取最先成功者；避免单个服务器
+        # 20s 超时拖慢整个流程（并发后最坏约等于单次 6s 超时）。
+        import concurrent.futures
+
+        def _probe(server):
             try:
-                resp = requests.post(server, data={"data": overpass_query}, headers=headers, timeout=20)
+                resp = _HTTP.post(
+                    server, data={"data": overpass_query}, timeout=6)
                 if resp.status_code == 200:
-                    data = resp.json()
-                    break
+                    return resp.json()
             except Exception:
-                continue
+                return None
+            return None
+
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(OVERPASS_SERVERS))
+        try:
+            futures = {executor.submit(_probe, s): s for s in OVERPASS_SERVERS}
+            for fut in concurrent.futures.as_completed(futures):
+                result = fut.result()
+                if result and "elements" in result:
+                    data = result
+                    for other in futures:
+                        other.cancel()
+                    break
+        finally:
+            executor.shutdown(wait=False)
 
         if not data or "elements" not in data:
             return f"{located_msg}❌ 获取 OSM 矢量 JSON 数据失败：Overpass 接口连接超时，请缩小视口后重试。"

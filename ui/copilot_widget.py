@@ -37,23 +37,6 @@ from .theme import (
 logger = get_logger(__name__)
 
 
-def _layer_icon(layer) -> str:
-    """Type marker for the layer picker menu."""
-    from qgis.core import QgsVectorLayer
-    if isinstance(layer, QgsRasterLayer):
-        return "🖼"
-    if isinstance(layer, QgsVectorLayer):
-        from qgis.core import QgsWkbTypes
-        geom = layer.geometryType()
-        if geom == QgsWkbTypes.PointGeometry:
-            return "📍"
-        if geom == QgsWkbTypes.LineGeometry:
-            return "📏"
-        if geom == QgsWkbTypes.PolygonGeometry:
-            return "⬡"
-        return "🗂"
-    return "🗂"
-
 # 内部技能函数名的展示文案统一由 tools.skill_registry 提供
 from ..tools.skill_registry import skill_label as _skill_registry_label
 
@@ -197,10 +180,10 @@ class LlmCopilotWidget(QWidget):
         # self.btn_key.setStyleSheet(BTN_KEY_QSS)
         # self.btn_key.clicked.connect(self.dock.show_account_page)
         # bottom_toolbar.addWidget(self.btn_key)
-        self.btn_select = QPushButton("🗺 图层 / 范围 ▾")
-        self.btn_select.setToolTip("选择解译图层并框选范围（全局生效，AI 解译页自动使用）")
+        self.btn_select = QPushButton("🗺 框选范围")
+        self.btn_select.setToolTip("点击后在地图上拖拽框选全局解译范围（全局生效，AI 解译页自动使用；未框选时自动使用当前视图范围）")
         self.btn_select.setStyleSheet(BTN_TOOLS_QSS)
-        self.btn_select.clicked.connect(self._show_selection_menu)
+        self.btn_select.clicked.connect(self._start_extent_select)
         bottom_toolbar.addWidget(self.btn_select)
 
         self.btn_tools = QPushButton("🧰 Tools 遥感工具箱 ▾")
@@ -267,16 +250,12 @@ class LlmCopilotWidget(QWidget):
     # -- 主页全局「图层 / 范围」选择 -------------------------------------------
 
     def _selection_chip_text(self) -> str:
-        layer = getattr(self.dock, "global_layer", None)
         extent = getattr(self.dock, "global_extent", None)
-        layer_text = layer.name() if layer is not None else "未选图层"
         if extent is not None:
-            extent_text = (
-                f"范围 X[{extent.xMinimum():.0f}–{extent.xMaximum():.0f}] "
+            return (
+                f"🗺 框选范围 X[{extent.xMinimum():.0f}–{extent.xMaximum():.0f}] "
                 f"Y[{extent.yMinimum():.0f}–{extent.yMaximum():.0f}]")
-        else:
-            extent_text = "未框选范围"
-        return f"🗺 {layer_text} · {extent_text}"
+        return "🗺 未框选范围（将使用当前视图）"
 
     def update_selection_chip(self):
         """Refresh the global-selection status chip, if it exists in the UI."""
@@ -291,44 +270,6 @@ class LlmCopilotWidget(QWidget):
             self.selection_chip.setText(text)
         else:
             self.dock.subtitle_label.setText(text)
-
-    def _show_selection_menu(self):
-        """Pop up the dynamic layer/extent picker menu."""
-        menu = QMenu(self)
-        menu.setStyleSheet(MENU_QSS)
-
-        head = menu.addAction(self._selection_chip_text())
-        head.setEnabled(False)
-        menu.addSeparator()
-
-        layer_menu = menu.addMenu("📄 选择图层")
-        layer_menu.setStyleSheet(MENU_QSS)
-        layers = list(QgsProject.instance().mapLayers().values())
-        current_layer = getattr(self.dock, "global_layer", None)
-        for layer in layers:
-            icon = _layer_icon(layer)
-            mark = "✔  " if layer is current_layer else ""
-            suffix = "" if icon else "  (非栅格)"
-            act = layer_menu.addAction(f"{mark}{icon} {layer.name()}{suffix}")
-            act.triggered.connect(
-                lambda chk=False, ly=layer: self._select_global_layer(ly))
-        if not layers:
-            empty = layer_menu.addAction("（工程中暂无图层）")
-            empty.setEnabled(False)
-
-        drag_act = menu.addAction("🐾 拖拽框选范围")
-        drag_act.triggered.connect(self._start_extent_select)
-        view_act = menu.addAction("🌸 使用当前视图范围")
-        view_act.triggered.connect(self._use_view_extent)
-
-        menu.exec_(self.btn_select.mapToGlobal(self.btn_select.rect().bottomLeft()))
-
-    def _select_global_layer(self, layer):
-        self.dock.set_global_selection(layer=layer)
-        logger.info("Global layer selected: %s", layer.name())
-
-    def _use_view_extent(self):
-        self.dock.set_global_selection(extent=self.dock.canvas.extent())
 
     def _start_extent_select(self):
         self._extent_select_tool = ExtentSelectTool(self.dock.canvas)

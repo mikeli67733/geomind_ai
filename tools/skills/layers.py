@@ -62,6 +62,7 @@ def _inspect_raster_profile(layer: QgsRasterLayer) -> Dict[str, Any]:
         suggested_route = "【标准地物首选】skill_ai_extract_feature；特殊地物降级使用 SAM3 或 底图参考；【严禁计算物理光谱指数】"
     elif is_sentinel or (band_count >= 4 and 8.0 <= res_x <= 35.0):
         data_type = f"哨兵/中分辨率多光谱卫星 ({res_x:.1f}m 分辨率, {band_count}波段)"
+        suggested_route = "【标准地物首选】skill_ai_extract_feature；特殊地物降级使用 SAM3；支持物理光谱指数计算"
     elif res_x < 0.35:
         data_type = f"无人机超高分辨率正射影像 ({res_x*100:.1f}cm 厘米级, {band_count}波段)"
         suggested_route = "【强制首选 SAM3 提示词模型】skill_ai_sam3_extract（地物模型易失效）"

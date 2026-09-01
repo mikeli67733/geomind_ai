@@ -17,6 +17,7 @@ the QGIS user profile dir (``geomind_ai/``), writable and persistent.
 """
 import json
 import os
+import re
 import shutil
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,56 @@ RECORD_FILE = "record.json"
 PARAMS_FILE = "params.json"
 LOG_FILE = "log.txt"
 OUTPUTS_DIR = "outputs"
+
+#: 会话标题关键词提取：常见引导语、句首/句末动作词
+_SKIP_PREFIXES = (
+    "请帮我看看", "帮我看看", "请帮我", "麻烦你", "请你", "帮我",
+    "我想", "我想要", "我要", "给我", "需要", "能不能", "能否",
+    "可以帮我", "请对", "请", "对", "把",
+)
+_PUNCT_SPLIT_RE = re.compile(
+    r"[\s\-_·/\\|()（）\[\]【】{}《》<>\"'“”‘’,，。.!！?？;；:：*#@^=+]+")
+_LEADING_ACTION_RE = re.compile(
+    r"^(请)?(分析|解译|提取|计算|统计|识别|检测|监测|生成|预测|定位|"
+    r"分类|聚类|检索|查找|查询|获取|下载|加载|合成|增强|滤波|分割|"
+    r"评估|对比|比较|解释|解读|矢量化)(一下|一遍|处理)?")
+_TRAILING_ACTION_RE = re.compile(
+    r"(进行|做一下|一下)?(分析|解译|提取|计算|统计|识别|检测|监测|生成|"
+    r"预测|定位|分类|聚类|检索|查找|查询|获取|下载|加载|合成|增强|滤波|"
+    r"分割|变化检测|评估|对比|比较|解释|解读|矢量化)(一下|一遍|处理)?$")
+
+
+def _extract_keywords_from_messages(messages: List[dict], max_len: int = 18) -> str:
+    """从会话首条用户消息提取关键词，作为历史列表/详情标题。
+
+    启发式规则：去标点 → 去常见引导语 → 去句首/句末动作词 →
+    中英文分别截断（英文保留前 4 词，中文保留前 max_len 字符）。
+    """
+    raw = ""
+    for msg in messages:
+        if msg.get("role") == "user":
+            raw = str(msg.get("content", "") or "").strip()
+            break
+    if not raw:
+        return ""
+    text = " ".join(_PUNCT_SPLIT_RE.split(raw)).strip()
+    for prefix in _SKIP_PREFIXES:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    text = _LEADING_ACTION_RE.sub("", text).strip()
+    text = _TRAILING_ACTION_RE.sub("", text).strip()
+    text = text.strip("的了啊呀吧呢吗")
+    if not text:
+        text = raw.strip()
+    words = text.split()
+    if words and all(re.fullmatch(r"[A-Za-z0-9]+", w) for w in words):
+        text = " ".join(words[:4])      # 英文取前 4 个词
+    elif words:
+        text = words[0]                  # 中文无空格，整句作为关键词
+    if len(text) > max_len:
+        text = text[:max_len] + "…"
+    return text or "AI 对话"
 
 
 def _data_root() -> str:
@@ -274,7 +325,12 @@ class HistoryStore:
         return records[:limit]
 
     def list_copilot_sessions(self, limit: int = 100) -> List[dict]:
-        """Return Copilot session summaries, newest-first."""
+        """Return Copilot session summaries, newest-first.
+
+        Each session is enriched with a ``keywords`` title extracted from its
+        first user message; the result is cached back into ``session.json`` so
+        the chat log is only re-read once per session.
+        """
         sessions: List[dict] = []
         page_dir = os.path.join(self.history_dir, "copilot")
         if not os.path.isdir(page_dir):
@@ -286,6 +342,10 @@ class HistoryStore:
             meta = self._read_json(meta_path)
             if not meta:
                 continue
+            if "keywords" not in meta:
+                meta["keywords"] = _extract_keywords_from_messages(
+                    self.read_session_chat(os.path.join(page_dir, name), limit=50))
+                self._write_json(meta_path, meta)
             meta["folder"] = os.path.join(page_dir, name)
             meta["name"] = name
             sessions.append(meta)

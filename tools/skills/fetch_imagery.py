@@ -6,7 +6,7 @@ STAC_AWS_URL = "https://earth-search.aws.element84.com/v1/search"
 STAC_MPC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 MPC_SIGN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/sign"
 
-from .common import _get_target_bbox, _download_and_decode_terrarium_tif
+from .common import _get_target_bbox, _download_and_decode_terrarium_tif, _HTTP
 
 import os
 import re
@@ -19,7 +19,6 @@ from io import BytesIO
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, Dict, Any, List
 
-import requests
 import numpy as np
 from PIL import Image
 from osgeo import gdal, ogr, osr
@@ -86,7 +85,7 @@ def search_and_load_sentinel2(
     ]
 
     try:
-        resp = requests.post(STAC_AWS_URL, json=payload, timeout=15)
+        resp = _HTTP.post(STAC_AWS_URL, json=payload, timeout=15)
         if resp.status_code != 200:
             return f"STAC 检索服务异常 (HTTP {resp.status_code})"
 
@@ -206,7 +205,7 @@ def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP3
                 "east": max_lon,
                 "outputFormat": "GTiff"
             }
-            resp = requests.get(ot_url, params=params, timeout=10)
+            resp = _HTTP.get(ot_url, params=params, timeout=10)
             if resp.status_code == 200 and len(resp.content) > 10000 and resp.content[:4] in (
                 b'II*\x00', b'MM\x00*', b'II\x2b\x00'
             ):
@@ -228,7 +227,7 @@ def skill_fetch_dem_data(place_name: str = "当前视口", dem_type: str = "COP3
                 "bbox": [min_lon, min_lat, max_lon, max_lat],
                 "limit": 1
             }
-            resp = requests.post(STAC_AWS_URL, json=payload, timeout=8)
+            resp = _HTTP.post(STAC_AWS_URL, json=payload, timeout=8)
             if resp.status_code == 200:
                 features = resp.json().get("features", [])
                 if features:
@@ -310,7 +309,7 @@ def skill_fetch_landsat_imagery(
             "limit": 3,
             "sortby": [{"field": "properties.eo:cloud_cover", "direction": "asc"}]
         }
-        resp = requests.post(STAC_AWS_URL, json=payload, timeout=15)
+        resp = _HTTP.post(STAC_AWS_URL, json=payload, timeout=15)
         features = resp.json().get("features", [])
         if not features:
             return f"{located_msg}在近 {days_back} 天内未检索到云量 < {max_cloud}% 的 Landsat 8/9 影像，建议放宽检索时间。"
@@ -351,7 +350,7 @@ def skill_fetch_landsat_imagery(
 def _mpc_sign_href(href: str) -> str:
     """为 Planetary Computer 上的受保护 blob 资产签发临时可匿名访问的 SAS URL。"""
     try:
-        resp = requests.get(MPC_SIGN_URL, params={"href": href}, timeout=10)
+        resp = _HTTP.get(MPC_SIGN_URL, params={"href": href}, timeout=10)
         if resp.status_code == 200:
             return resp.json().get("href", href)
     except Exception as e:
@@ -389,7 +388,7 @@ def skill_fetch_sentinel1_sar(
             "limit": 5,
             "sortby": [{"field": "datetime", "direction": "desc"}]
         }
-        resp = requests.post(STAC_MPC_URL, json=payload, timeout=15)
+        resp = _HTTP.post(STAC_MPC_URL, json=payload, timeout=15)
         if resp.status_code != 200:
             return f"{located_msg}Sentinel-1 SAR 检索服务异常 (HTTP {resp.status_code})"
 

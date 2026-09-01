@@ -1,4 +1,4 @@
 {
   "server_url": "",
-  "_note": "Local server URL override. Not consumed by code: URL resolution is handled in core/constants.py via REMOTE_CONFIG_URLS (remote fetch) and FALLBACK_SERVER_URL (local fallback). Leave empty to use the built-in resolution chain."
+  "_note": "Local server URL override. Read by core/config.py Settings._local_file_value('server_url') in the resolution chain: QSettings override > this file > remote config > FALLBACK_SERVER_URL. Leave empty to use the built-in resolution chain."
 }

@@ -8,12 +8,16 @@ embedding when no external embedding API is available.
 """
 import os
 import json
+import zlib
 import numpy as np
 from qgis.core import QgsApplication, QgsProcessingAlgorithm
 
 from ..core.logger import get_logger
 
 logger = get_logger("utils.qgis_indexer")
+
+#: 缓存版本号——嵌入算法或索引结构变化时递增，旧缓存自动重建
+INDEX_VERSION = 2
 
 try:
     from openai import OpenAI
@@ -68,13 +72,18 @@ class QgisToolVectorIndexer:
 
     @staticmethod
     def _local_bag_of_words_embedding(texts: list) -> np.ndarray:
-        """Lightweight character-level n-gram embedding for offline use."""
+        """Lightweight character-level n-gram embedding for offline use.
+
+        注意：特征必须用确定性哈希（crc32），不能使用 ``hash()`` —— Python
+        对字符串的 ``hash()`` 每次进程随机（PYTHONHASHSEED），会导致跨进程
+        构建的向量缓存与查询向量空间不一致，检索结果退化为随机排序。
+        """
         dim = 256
         vectors = []
         for text in texts:
             vec = np.zeros(dim, dtype=np.float32)
             for ch in text:
-                idx = hash(ch) % dim
+                idx = zlib.crc32(ch.encode("utf-8")) % dim
                 vec[idx] += 1.0
             norm = np.linalg.norm(vec)
             if norm > 0:
@@ -86,7 +95,9 @@ class QgisToolVectorIndexer:
 
     def _load_or_build_index(self):
         """Load cached index or rebuild from scratch."""
-        if os.path.exists(self.index_file) and os.path.exists(self.vectors_file):
+        if (self._cached_version() == INDEX_VERSION
+                and os.path.exists(self.index_file)
+                and os.path.exists(self.vectors_file)):
             try:
                 with open(self.index_file, "r", encoding="utf-8") as f:
                     self.tools_metadata = json.load(f)
@@ -97,6 +108,16 @@ class QgisToolVectorIndexer:
                 logger.warning("Cache read failed, rebuilding: %s", e)
 
         self.rebuild_index()
+
+    def _cached_version(self) -> int:
+        try:
+            with open(self._version_file(), "r", encoding="utf-8") as fh:
+                return int(json.load(fh).get("version", 0))
+        except Exception:
+            return 0
+
+    def _version_file(self) -> str:
+        return self.index_file.replace(".json", "_version.json")
 
     def rebuild_index(self):
         """Scan the QGIS processing registry and build the vector index."""
@@ -114,8 +135,11 @@ class QgisToolVectorIndexer:
             name = alg.displayName()
             group = alg.group()
             desc = alg.shortDescription() or alg.displayName()
+            # 长描述含关键词（如栅格计算器的"波段运算"），截断避免膨胀
+            long_desc = (alg.longDescription() or "")[:200].replace("\n", " ")
 
-            doc_str = f"算法ID: {alg_id} | 算法名称: {name} | 分组: {group} | 描述: {desc}"
+            doc_str = (f"算法ID: {alg_id} | 算法名称: {name} | 分组: {group} "
+                       f"| 描述: {desc} {long_desc}")
 
             self.tools_metadata.append({
                 "id": alg_id,
@@ -145,6 +169,8 @@ class QgisToolVectorIndexer:
             with open(self.index_file, "w", encoding="utf-8") as f:
                 json.dump(self.tools_metadata, f, ensure_ascii=False, indent=2)
             np.save(self.vectors_file, self.vectors)
+            with open(self._version_file(), "w", encoding="utf-8") as fh:
+                json.dump({"version": INDEX_VERSION}, fh)
             logger.info("Index built and cached successfully")
         except Exception as e:
             logger.warning("Cache write failed: %s", e)

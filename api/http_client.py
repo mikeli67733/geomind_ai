@@ -68,6 +68,7 @@ class HttpClient:
         self,
         url: str,
         *,
+        params: Optional[dict] = None,
         json: Optional[dict] = None,
         data: Optional[dict] = None,
         files: Optional[dict] = None,
@@ -80,7 +81,8 @@ class HttpClient:
         """Perform a POST request; returns the ``requests.Response`` object."""
         return self.request(
             "POST", url,
-            json=json, data=data, files=files, headers=headers, timeout=timeout,
+            params=params, json=json, data=data, files=files, headers=headers,
+            timeout=timeout,
             auth=auth, retries=retries, retry_on_status=retry_on_status,
         )
 
