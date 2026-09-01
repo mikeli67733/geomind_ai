@@ -16,6 +16,7 @@ from . import analysis as _analysis
 from . import ai_tasks as _ai
 from . import qgis_ops as _qgis
 from . import web as _web
+from . import map_screenshot as _shots
 
 _A = _analysis
 _FI = _imagery
@@ -96,6 +97,9 @@ register("skill_web_search", _web.skill_web_search,
          "联网检索实时资讯与专业文档", "web")
 register("skill_fetch_webpage_content", _web.skill_fetch_webpage_content,
          "抓取并解析网页正文内容", "web")
+
+register("capture_map_view", _shots.skill_capture_map_view,
+         "截取当前地图画布作为视觉参考", "local")
 
 
 # Compatibility re-exports (legacy code imports these from tools.skills)

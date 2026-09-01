@@ -29,12 +29,38 @@ from ..core.exceptions import ExtentTooLargeError
 from ..core.history import history_store
 from ..core.logger import get_logger
 from ..utils.extent_tool import ExtentSelectTool
+from ..utils.map_capture import queue_map_screenshot, take_pending_screenshot
 from .theme import (
     BTN_CLEAR_QSS, BTN_STOP_QSS, BTN_KEY_QSS, BTN_TOOLS_QSS,
     BTN_SEND_QSS, CHAT_HISTORY_QSS, INPUT_CARD_QSS, MENU_QSS,
 )
 
 logger = get_logger(__name__)
+
+#: 执行成功后可自动截图给模型作视觉参考的技能（三类特殊步骤：
+#: ① 影像加载 ② 光谱指数/本地计算 ③ 算法算子执行）
+_AUTO_CAPTURE_SKILLS = frozenset({
+    "skill_fetch_sentinel2_imagery", "skill_fetch_dem_data",
+    "skill_fetch_landsat_imagery", "skill_fetch_sentinel1_sar",
+    "skill_fetch_osm_vector_data", "skill_fetch_natural_earth",
+    "skill_fetch_worldcover_lulc", "skill_fetch_worldpop_density",
+    "skill_fetch_nighttime_lights", "skill_fetch_hydrology_data",
+    "skill_fetch_era5_climate",
+    "skill_calc_spectral_index", "skill_raster_threshold",
+    "skill_run_pca", "skill_dem_analysis", "skill_spatial_filter",
+    "skill_area_statistics", "skill_vector_smooth", "skill_kmeans_cluster",
+    "skill_raster_diff", "skill_image_enhance", "skill_raster_polygonize",
+    "qgis_run_algorithm", "execute_pyqgis_code",
+})
+
+#: 结果文本包含这些关键字时视为执行失败，不触发自动截图
+_FAIL_HINTS = ("❌", "错误", "失败", "未找到", "未检索到", "未能",
+               "执行报错", "参数错误", "无法", "超时")
+
+
+def _looks_successful(res) -> bool:
+    text = str(res)
+    return not any(hint in text for hint in _FAIL_HINTS)
 
 
 # 内部技能函数名的展示文案统一由 tools.skill_registry 提供
@@ -625,12 +651,23 @@ class LlmCopilotWidget(QWidget):
     def _request_backend_copilot(self):
         self._sanitize_chat_history()
 
+        # 把待发送的地图画布截图注入为一条带图 user 消息（仅本次请求，
+        # 不写入持久化历史，避免 base64 图片膨胀 chat.jsonl）
+        send_messages = list(self.chat_history)
+        shot = take_pending_screenshot()
+        if shot:
+            send_messages.append({
+                "role": "user",
+                "content": f"📸 地图画布截图参考：{shot['caption']}",
+                "images": [shot["data_uri"]],
+            })
+
         active_layers = [l.name() for l in QgsProject.instance().mapLayers().values()]
         server_url = self.dock.current_server_url()
         token = self.dock.token
         machine_id = getattr(self.dock, "machine_id", "")
 
-        task = BackendCopilotTask(server_url, token, self.chat_history, active_layers, machine_id=machine_id)
+        task = BackendCopilotTask(server_url, token, send_messages, active_layers, machine_id=machine_id)
         task.chunkReceived.connect(self._on_chunk_received)
         task.taskError.connect(self._on_copilot_error)
         task.taskFinished.connect(self._on_copilot_finished)
@@ -707,6 +744,13 @@ class LlmCopilotWidget(QWidget):
                     tool_record["status"] = "error"
                     tool_record["result"] = str(e)
                     res = f"执行报错: {e}"
+
+                # 特殊步骤自动截图：图层加载/计算结果成功后给模型视觉参考
+                if (fn_name in _AUTO_CAPTURE_SKILLS
+                        and tool_record["status"] == "ok"
+                        and _looks_successful(res)):
+                    queue_map_screenshot(
+                        reason=f"已执行 {_skill_human_label(fn_name)}")
 
                 self._append_chat({
                     "tool_call_id": tc["id"],
@@ -952,6 +996,8 @@ class LlmCopilotWidget(QWidget):
 
         if new_layer.isValid():
             QgsProject.instance().addMapLayer(new_layer)
+            # 特殊步骤：AI 解译结果加载后给模型视觉参考
+            queue_map_screenshot(reason=f"AI 解译结果已加载: {layer_name}")
             self.display_items.append({
                 "id": f"ai_ok_{time.time()}",
                 "role": "assistant",
