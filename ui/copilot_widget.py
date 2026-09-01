@@ -389,6 +389,10 @@ class LlmCopilotWidget(QWidget):
 
             elif role == "assistant":
                 sub_blocks = []
+                # 正在进行中的生成（有活动 LLM 任务且是当前卡片）
+                is_live = (self._llm_task is not None
+                           and self._current_assistant_item is not None
+                           and item.get("id") == self._current_assistant_item.get("id"))
 
                 # (A) 思考过程卡片
                 reasoning = item.get("reasoning", "")
@@ -396,11 +400,12 @@ class LlmCopilotWidget(QWidget):
                     is_collapsed = item.get("reasoning_collapsed", False)
                     char_count = len(reasoning)
                     if is_collapsed:
+                        think_label = "⏳ 思考中" if is_live else "▶ 🤔 模型思考过程"
                         sub_blocks.append(
                             "<div style='margin:4px 0;'>"
                             f"<a href='toggle:reasoning:{item_id}' style='text-decoration:none; color:#64748b; font-size:11px; font-weight:600; "
                             "background-color:#f1f5f9; border:1px solid #e2e8f0; border-radius:4px; padding:3px 8px; display:inline-block;'>"
-                            f"▶ 🤔 模型思考过程 ({char_count} 字 · 点击展开)</a></div>"
+                            f"{think_label} ({char_count} 字 · 点击展开)</a></div>"
                         )
                     else:
                         formatted_r = _render_mini_markdown(reasoning)
@@ -460,6 +465,14 @@ class LlmCopilotWidget(QWidget):
                         "padding:10px 14px; margin:8px 18px 4px 0; color:#1e293b; font-size:13px; line-height:1.55;'>"
                         "<div style='font-weight:700; color:#0f172a; font-size:12px; margin-bottom:4px;'>GeoMind Copilot</div>"
                         f"<div>{formatted_c}</div></div>"
+                    )
+
+                # (D) 思考中占位提示：模型生成中且尚无任何输出时，
+                #     避免界面一片空白让人误以为已经运行完
+                if is_live and not content and not reasoning:
+                    sub_blocks.append(
+                        "<div style='margin:6px 18px 4px 0; color:#64748b; font-size:12px;'>"
+                        "⏳ <span style='color:#2563eb; font-weight:600;'>正在思考</span>，请稍候…</div>"
                     )
 
                 if sub_blocks:
@@ -673,6 +686,8 @@ class LlmCopilotWidget(QWidget):
         task.taskFinished.connect(self._on_copilot_finished)
 
         self._llm_task = task
+        # 请求一发出立即渲染一次，让“正在思考”占位提示立刻可见
+        self._render_chat_ui(force=True)
         QgsApplication.taskManager().addTask(task)
 
     def _on_chunk_received(self, data: dict):
