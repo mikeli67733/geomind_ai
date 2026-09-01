@@ -56,12 +56,14 @@ class HttpClient:
         auth: bool = False,
         retries: Optional[int] = None,
         retry_on_status: bool = False,
+        stream: bool = False,
     ):
         """Perform a GET request; returns the ``requests.Response`` object."""
         return self.request(
             "GET", url,
             params=params, headers=headers, timeout=timeout,
             auth=auth, retries=retries, retry_on_status=retry_on_status,
+            stream=stream,
         )
 
     def post(
@@ -77,6 +79,7 @@ class HttpClient:
         auth: bool = False,
         retries: Optional[int] = None,
         retry_on_status: bool = False,
+        stream: bool = False,
     ):
         """Perform a POST request; returns the ``requests.Response`` object."""
         return self.request(
@@ -84,6 +87,7 @@ class HttpClient:
             params=params, json=json, data=data, files=files, headers=headers,
             timeout=timeout,
             auth=auth, retries=retries, retry_on_status=retry_on_status,
+            stream=stream,
         )
 
     def request(
@@ -100,8 +104,13 @@ class HttpClient:
         auth: bool = False,
         retries: Optional[int] = None,
         retry_on_status: bool = False,
+        stream: bool = False,
     ):
-        """Core request loop with exponential-backoff retry on network errors."""
+        """Core request loop with exponential-backoff retry on network errors.
+
+        ``stream=True`` 时不等待响应体下载完（SSE 逐块读取必需），
+        由调用方通过 ``iter_lines`` 增量消费。
+        """
         max_retries = self.retries if retries is None else retries
         eff_timeout = self.request_timeout if timeout is None else timeout
         kwargs = {
@@ -110,6 +119,7 @@ class HttpClient:
             "data": data,
             "files": files,
             "timeout": eff_timeout,
+            "stream": stream,
         }
 
         for attempt in range(max_retries + 1):

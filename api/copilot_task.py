@@ -52,8 +52,10 @@ class BackendCopilotTask(QgsTask):
         try:
             self._client = HttpClient(token=self.token, request_timeout=180, retries=1)
             # retries=0: SSE streams must never be replayed after a partial read.
+            # stream=True: 边收边读，前端逐 token 显示；连接 10s / 读取 300s
             self._resp = self._client.post(
-                url, json=payload, auth=True, timeout=180, retries=0
+                url, json=payload, auth=True, timeout=(10, 300), retries=0,
+                stream=True,
             )
             if self._resp.status_code == 401:
                 self.taskError.emit("登录已过期，请重新登录后再试")
