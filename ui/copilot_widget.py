@@ -106,7 +106,7 @@ def _render_mini_markdown(raw_text: str) -> str:
 
     # 4. 粗体与斜体
     text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
-    text = re.sub(r"\*([^*]+)\*", r"<i>\1</i>", text)
+    text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", text)
 
     # 5. 无序列表
     text = re.sub(r"^(?:[\*\-]\s+)(.+)$", r"<div style='margin-left:8px;'>• \1</div>", text, flags=re.MULTILINE)
