@@ -480,10 +480,13 @@ class LlmCopilotWidget(QWidget):
 
         self.history_browser.setHtml("".join(html_blocks))
 
-        if preserve_scroll and not is_at_bottom:
-            sb.setValue(old_val)
-        else:
+        # 视口跟随策略：用户贴近底部时跟随最新输出；正在上翻阅读历史时
+        # 保持滚动条位置不变，避免每 60ms 一个 chunk 就把视口拽回底部
+        # （表现为界面一跳一跳来回晃）。
+        if is_at_bottom:
             self._scroll_to_bottom()
+        else:
+            sb.setValue(old_val)
 
     def _reset_welcome_message(self):
         self.display_items = []
@@ -1089,12 +1092,9 @@ class LlmCopilotWidget(QWidget):
     # -- 辅助方法 -----------------------------------------------------------
 
     def _scroll_to_bottom(self):
-        """双保险置底：先移动 QTextCursor，再延迟一帧等待 Qt HTML 布局计算完毕强行拉到底部。"""
-        from qgis.PyQt.QtGui import QTextCursor
-        self.history_browser.moveCursor(QTextCursor.End)
-        QTimer.singleShot(20, self._force_scroll_bottom)
-
-    def _force_scroll_bottom(self):
+        """同步置底。setHtml 后滚动条范围已随布局同步更新，
+        直接 setValue(maximum) 即可；不要再加延迟 singleShot
+        （延迟置底会与 60ms 节流渲染互相竞争，导致视口来回跳）。"""
         sb = self.history_browser.verticalScrollBar()
         sb.setValue(sb.maximum())
 
