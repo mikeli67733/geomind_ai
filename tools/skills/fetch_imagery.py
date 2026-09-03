@@ -50,9 +50,10 @@ def search_and_load_sentinel2(
     date_start: str = None,
     date_end: str = None,
     max_cloud_cover: int = 20,
-    auto_load_first: bool = True
+    auto_load_first: bool = True,
+    full_12_bands: bool = True  # 默认为 True 加载全部 12 波段
 ) -> str:
-    """优化版：支持跨瓦片自动拼接（Mosaic）的 Sentinel-2 流式获取"""
+    """优化版：支持跨瓦片自动拼接（Mosaic）与 12 波段全光谱流式获取"""
     today = datetime.now()
     if not date_end:
         date_end = today.strftime("%Y-%m-%d")
@@ -76,17 +77,32 @@ def search_and_load_sentinel2(
             "args": [{"property": "eo:cloud_cover"}, max_cloud_cover]
         },
         "limit": 10,
-        # 改为优先按时间降序（获取最新的一批），避免不同日期混拼
         "sortby": [{"field": "properties.datetime", "direction": "desc"}]
     }
 
-    # 常用波段配置（B02蓝, B03绿, B04红, B08近红外 等）
-    SENTINEL2_CORE_BANDS = [
-        ("B02", ["blue", "B02", "b02"]),
-        ("B03", ["green", "B03", "b03"]),
-        ("B04", ["red", "B04", "b04"]),
-        ("B08", ["nir", "nir08", "B08", "b08"]),
-    ]
+    # 12 波段全光谱配置
+    if full_12_bands:
+        target_bands = [
+            ("B01", ["coastal", "B01", "b01"]),
+            ("B02", ["blue", "B02", "b02"]),
+            ("B03", ["green", "B03", "b03"]),
+            ("B04", ["red", "B04", "b04"]),
+            ("B05", ["rededge1", "B05", "b05"]),
+            ("B06", ["rededge2", "B06", "b06"]),
+            ("B07", ["rededge3", "B07", "b07"]),
+            ("B08", ["nir", "B08", "b08"]),
+            ("B8A", ["nir08", "nir-narrow", "nir_narrow", "B8A", "b8a"]),
+            ("B09", ["wvp", "water-vapor", "water_vapor", "B09", "b09"]),
+            ("B11", ["swir16", "swir-16", "swir_16", "B11", "b11"]),
+            ("B12", ["swir22", "swir-22", "swir_22", "B12", "b12"]),
+        ]
+    else:
+        target_bands = [
+            ("B02", ["blue", "B02", "b02"]),
+            ("B03", ["green", "B03", "b03"]),
+            ("B04", ["red", "B04", "b04"]),
+            ("B08", ["nir", "nir08", "B08", "b08"]),
+        ]
 
     try:
         resp = _HTTP.post(STAC_AWS_URL, json=payload, timeout=15)
@@ -97,27 +113,25 @@ def search_and_load_sentinel2(
         if not features:
             return f"在指定时间段内未检索到云量 < {max_cloud_cover}% 的 Sentinel-2 影像。"
 
-        # 1. 按“拍摄日期”对瓦片进行聚类分组
-        # 因为跨界区域在同一天会被多景瓦片（Tiles）同时覆盖
+        # 按拍摄日期聚类
         scenes_by_date = {}
         for feat in features:
             d = (feat.get("properties", {}).get("datetime") or "")[:10]
             if d:
                 scenes_by_date.setdefault(d, []).append(feat)
 
-        # 选取最新的一组时相
         target_date = list(scenes_by_date.keys())[0]
         target_features = scenes_by_date[target_date]
 
         if not auto_load_first:
             return f"成功检索到 {target_date} 共 {len(target_features)} 景相关瓦片。"
 
-        # 2. 逐波段构建多瓦片镶嵌（Mosaic）
         band_mosaic_vrts = []
         temp_dir = tempfile.gettempdir()
         time_tag = datetime.now().strftime("%H%M%S")
 
-        for b_name, aliases in SENTINEL2_CORE_BANDS:
+        # 逐波段做多景空间拼接
+        for b_name, aliases in target_bands:
             same_band_urls = []
             for feat in target_features:
                 assets = feat.get("assets", {})
@@ -129,7 +143,6 @@ def search_and_load_sentinel2(
             if not same_band_urls:
                 continue
 
-            # 如果该波段有多个瓦片，BuildVRT 不传 separate=True 就是空间拼接（Mosaic）
             band_vrt_path = os.path.join(temp_dir, f"s2_{target_date}_{b_name}_{time_tag}.vrt")
             gdal.BuildVRT(band_vrt_path, same_band_urls)
             band_mosaic_vrts.append(band_vrt_path)
@@ -137,30 +150,34 @@ def search_and_load_sentinel2(
         if not band_mosaic_vrts:
             return "未能成功提取影像的光谱波段资产 URL。"
 
-        # 3. 将拼接好的各个单波段合成一个多波段 VRT（separate=True）
+        # 将所有单波段叠放为一个多波段 VRT (separate=True)
         stacked_vrt = os.path.join(temp_dir, f"s2_{target_date}_stacked_{time_tag}.vrt")
         gdal.BuildVRT(stacked_vrt, band_mosaic_vrts, options=gdal.BuildVRTOptions(separate=True))
 
-        # 4. 精确按目标边界裁切（切记：绝不要手动写 srcSRS，让 GDAL 自动识别原始 UTM）
+        # 按目标范围裁切并对齐不同分辨率（10m/20m/60m 自动通过双线性内插统一对齐）
         final_clipped_vrt = os.path.join(temp_dir, f"s2_{target_date}_final_{time_tag}.vrt")
         warp_opts = gdal.WarpOptions(
             format="VRT",
             outputBounds=[minx, miny, maxx, maxy],
-            outputBoundsSRS="EPSG:4326",      # 强制统一输出为您所需的 CRS
+            outputBoundsSRS="EPSG:4326",
             resampleAlg="bilinear",
-            dstNodata=0                       # 边缘无覆盖区域设为透明，避免黑边扭曲
+            dstNodata=0
         )
         gdal.Warp(final_clipped_vrt, stacked_vrt, options=warp_opts)
 
-        # 5. 加载完整图层至 QGIS
-        layer_name = f"Sentinel2_{target_date}_完整拼接覆盖({len(target_features)}瓦片)"
+        # 加载完整图层至 QGIS
+        loaded_band_count = len(band_mosaic_vrts)
+        layer_name = f"Sentinel2_{target_date}_{loaded_band_count}波段_拼接覆盖({len(target_features)}瓦片)"
         layer = QgsRasterLayer(final_clipped_vrt, layer_name, "gdal")
 
         if layer and layer.isValid():
             QgsProject.instance().addMapLayer(layer)
             if iface and iface.mapCanvas():
                 iface.mapCanvas().refresh()
-            return f"🛰️ **已成功流式加载完整影像**：`{layer_name}`\n*(已自动合并 {len(target_features)} 景空间瓦片，完整覆盖框选区域)*"
+            return (
+                f"🛰️ **已成功流式加载完整多光谱影像**：`{layer_name}`\n"
+                f"*(共 {loaded_band_count} 个光谱波段，已自动合并 {len(target_features)} 景空间瓦片)*"
+            )
 
         return "合成影像加载失败，栅格图层无效。"
 

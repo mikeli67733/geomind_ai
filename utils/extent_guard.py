@@ -5,8 +5,9 @@ against a raster layer and reports whether it is too large to interpret.
 
 Used before clipping/uploading cloud interpretation tasks so oversized
 viewport ranges are rejected early instead of timing out or failing
-mid-flight.  Applies to both the dock UI pages and the Copilot skills.
+mid-flight. Applies to both the dock UI pages and the Copilot skills.
 """
+from qgis.PyQt.QtCore import QSettings
 from qgis.core import (
     QgsProject,
     QgsRectangle,
@@ -20,6 +21,20 @@ from ..core.constants import (
 from ..core.logger import get_logger
 
 logger = get_logger("utils.extent_guard")
+
+
+def is_local_gateway_mode() -> bool:
+    """
+    检查当前是否配置为本地/私有化网关模式。
+    读取与 AccountSettingsPage 一致的 QSettings 配置项。
+    """
+    try:
+        settings = QSettings()
+        mode = settings.value("GeoMind/gateway_mode", "cloud")
+        return mode == "custom"
+    except Exception as err:
+        logger.debug("Failed to read gateway settings: %s", err)
+        return False
 
 
 def estimate_extent_pixels(layer, extent, extent_crs=None):
@@ -59,14 +74,27 @@ def check_extent_too_large(
     extent_crs=None,
     max_pixels: int = MAX_EXTENT_PIXELS,
     max_side: int = MAX_EXTENT_SIDE_PIXELS,
+    is_local: bool = None,
 ):
     """
     Check whether *extent* is too large to interpret on *layer*.
 
-    Returns ``(is_too_large, message)``.  When the estimate is not
-    possible the check passes (``False``) so legitimate tasks are not
-    blocked by missing metadata.
+    :param is_local: 是否为本地服务。如果为 None，则会自动通过
+                     QSettings 判断当前是否处于本地/私有网关模式。
+                     本地模式下直接取消限制，返回 (False, "")。
+
+    Returns ``(is_too_large, message)``.
     """
+    # 1. 判断是否为本地模式：未显式传入时自动从配置读取
+    if is_local is None:
+        is_local = is_local_gateway_mode()
+
+    # 2. 本地模式：彻底取消限制，允许任意大小解译
+    if is_local:
+        logger.debug("当前为本地/私有服务模式，已跳过解译范围尺寸限制。")
+        return False, ""
+
+    # 3. 远程云端模式：执行原有的严格尺寸校验
     size = estimate_extent_pixels(layer, extent, extent_crs)
     if size is None:
         return False, ""

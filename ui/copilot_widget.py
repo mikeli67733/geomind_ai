@@ -3,9 +3,10 @@
 AI Copilot chat widget — natural language interface for RS/GIS operations.
 
 Performance & Stability Upgrades:
+- Compact Rich-Text & Markdown Engine (Tables, HR, Image Badges, no excess linebreaks)
+- Intelligent Sticky Scroll (auto-scroll follows stream without fighting user scroll)
 - 60ms UI Render Throttler (reduces setHtml calls by 90%, ultra-smooth)
 - Event pump integration to prevent UI freezing during network I/O
-- Markdown rich-text rendering with lightweight regex caching
 - Collapsible Reasoning (auto-collapses on text output)
 - Anti-Loop Deadlock Guard for asynchronous tool calls
 - Concurrent Multi-Task Queue with Semantic Layer Naming
@@ -21,7 +22,7 @@ from qgis.PyQt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QTextBrowser,
     QMessageBox, QFrame, QMenu, QLabel, QApplication,
 )
-from qgis.PyQt.QtGui import QDesktopServices
+from qgis.PyQt.QtGui import QDesktopServices, QTextCursor
 from qgis.core import QgsProject, QgsRasterLayer, QgsVectorLayer, QgsApplication
 
 from ..api.copilot_task import BackendCopilotTask
@@ -72,52 +73,135 @@ def _skill_human_label(fn_name: str) -> str:
 
 
 def _render_mini_markdown(raw_text: str) -> str:
-    """将 Markdown 转换为符合 Qt Rich Text 规范的 HTML。"""
+    """将 Markdown 转换为符合 Qt Rich Text 规范的高性能、紧凑 HTML。"""
     if not raw_text:
         return ""
 
-    text = html.escape(raw_text)
+    # 0. 规范化换行，压缩 3 个及以上连续无意义空行
+    text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = html.escape(text)
 
-    # 1. 独立代码块 ```code```
-    def replace_code_block(m):
+    # 1. 独立代码块保护 ```code```
+    code_blocks = []
+    def save_code_block(m):
         code = m.group(1).strip()
-        return (
+        idx = len(code_blocks)
+        html_code = (
             "<div style='background-color:#1e293b; color:#f8fafc; border-radius:6px; "
-            "padding:8px 10px; margin:6px 0; font-family:Consolas, Monaco, monospace; "
+            "padding:6px 10px; margin:4px 0; font-family:Consolas, Monaco, monospace; "
             f"font-size:11px; white-space:pre-wrap;'>{code}</div>"
         )
+        code_blocks.append(html_code)
+        return f"__CODE_BLOCK_{idx}__"
 
-    text = re.sub(r"```(?:\w+)?\n?(.*?)```", replace_code_block, text, flags=re.DOTALL)
+    text = re.sub(r"```(?:\w+)?\n?(.*?)```", save_code_block, text, flags=re.DOTALL)
 
-    # 2. 行内代码 `code`
+    # 2. 解析 Markdown 表格（| 列1 | 列2 |）转为紧凑漂亮的 HTML Table
+    def _render_html_table(rows):
+        if not rows:
+            return ""
+        html_parts = ["<table style='border-collapse:collapse; width:100%; margin:6px 0; font-size:12px;'>"]
+        for i, row in enumerate(rows):
+            if i == 0:
+                html_parts.append("<tr style='background-color:#f1f5f9;'>")
+                for cell in row:
+                    html_parts.append(f"<th style='border:1px solid #cbd5e1; padding:4px 8px; text-align:left; font-weight:700;'>{cell}</th>")
+                html_parts.append("</tr>")
+            else:
+                bg = "#ffffff" if i % 2 == 1 else "#f8fafc"
+                html_parts.append(f"<tr style='background-color:{bg};'>")
+                for cell in row:
+                    html_parts.append(f"<td style='border:1px solid #cbd5e1; padding:4px 8px;'>{cell}</td>")
+                html_parts.append("</tr>")
+        html_parts.append("</table>")
+        return "".join(html_parts)
+
+    def parse_markdown_tables(src: str) -> str:
+        lines = src.split("\n")
+        in_table = False
+        new_lines = []
+        table_rows = []
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("|") and stripped.endswith("|"):
+                # 跳过表头分割线行 |---|---|
+                if re.match(r"^\|[\s\-:|]+\|$", stripped):
+                    continue
+                cells = [c.strip() for c in stripped.strip("|").split("|")]
+                table_rows.append(cells)
+                in_table = True
+            else:
+                if in_table:
+                    new_lines.append(_render_html_table(table_rows))
+                    table_rows = []
+                    in_table = False
+                new_lines.append(line)
+        if in_table:
+            new_lines.append(_render_html_table(table_rows))
+        return "\n".join(new_lines)
+
+    text = parse_markdown_tables(text)
+
+    # 3. 分割线 --- 替换为轻量淡色分割线
+    text = re.sub(
+        r"^(?:---|---|\*\*\*)$",
+        r"<hr style='border:none; border-top:1px solid #e2e8f0; margin:8px 0;'>",
+        text,
+        flags=re.MULTILINE
+    )
+
+    # 4. 行内代码 `code`
     text = re.sub(
         r"`([^`]+)`",
-        r"<span style='background-color:#f1f5f9; color:#0f172a; padding:1px 5px; border-radius:4px; font-family:Consolas, monospace; font-size:11px; border:1px solid #e2e8f0;'>\1</span>",
+        r"<span style='background-color:#f1f5f9; color:#0f172a; padding:1px 4px; border-radius:3px; font-family:Consolas, monospace; font-size:11px; border:1px solid #e2e8f0;'>\1</span>",
         text
     )
 
-    # 3. 标题 (##, ###)
-    text = re.sub(r"^(?:###\s+)(.+)$",
-                  r"<div style='font-size:13px; font-weight:700; color:#0f172a; margin:8px 0 4px 0;'>\1</div>", text,
-                  flags=re.MULTILINE)
-    text = re.sub(r"^(?:##\s+)(.+)$",
-                  r"<div style='font-size:14px; font-weight:700; color:#0f172a; margin:10px 0 4px 0;'>\1</div>", text,
-                  flags=re.MULTILINE)
+    # 5. 截图/图片占位符友好转换 ![alt](url)
+    text = re.sub(
+        r"!\[(.*?)\]\((.*?)\)",
+        r"<div style='margin:4px 0; padding:4px 8px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:4px; font-size:11px; color:#166534; display:inline-block;'>🖼️ <b>\1</b> (已在地图工作区呈现)</div>",
+        text
+    )
 
-    # 4. 粗体与斜体
+    # 6. 标题 (##, ###) — 降低 margin 避免上下过宽
+    text = re.sub(r"^###\s+(.+)$", r"<div style='font-size:13px; font-weight:700; color:#0f172a; margin:6px 0 2px 0;'>\1</div>", text, flags=re.MULTILINE)
+    text = re.sub(r"^##\s+(.+)$", r"<div style='font-size:14px; font-weight:700; color:#0f172a; margin:8px 0 3px 0;'>\1</div>", text, flags=re.MULTILINE)
+
+    # 7. 粗体与斜体
     text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
     text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", text)
 
-    # 5. 无序列表
-    text = re.sub(r"^(?:[\*\-]\s+)(.+)$", r"<div style='margin-left:8px;'>• \1</div>", text, flags=re.MULTILINE)
+    # 8. 无序列表 (统一紧凑排版)
+    text = re.sub(r"^(?:[\*\-]\s+)(.+)$", r"<div style='margin-left:8px; margin-top:2px; margin-bottom:2px;'>• \1</div>", text, flags=re.MULTILINE)
 
-    # 6. 换行
-    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
+    # 9. 智能行尾合并（块级 HTML 标签后绝不追加 <br>，彻底消除多重空白行）
+    lines = text.split("\n")
+    processed_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if (stripped.endswith("</div>") or stripped.endswith("</table>") or
+                stripped.endswith("</hr>") or stripped.startswith("<hr")):
+            processed_lines.append(stripped)
+        elif not stripped:
+            # 真正的空行，只放微小的 4px 垂直间隙
+            processed_lines.append("<div style='height:4px;'></div>")
+        else:
+            processed_lines.append(stripped + "<br>")
+
+    text = "".join(processed_lines)
+
+    # 10. 还原代码块
+    for i, block in enumerate(code_blocks):
+        text = text.replace(f"__CODE_BLOCK_{i}__", block)
+
     return text
 
 
 class LlmCopilotWidget(QWidget):
-    """具有折叠思考、实时动态进度条与流式卡片渲染的 AI Copilot 助手。"""
+    """具有折叠思考、实时动态进度条、智能底端吸附与流式卡片渲染的 AI Copilot 助手。"""
 
     def __init__(self, main_dock, parent=None):
         super().__init__(parent)
@@ -130,6 +214,9 @@ class LlmCopilotWidget(QWidget):
         self._current_progress_item_id = None
         self._consecutive_tool_calls: list = []
         self._chat_session_dir = None   # history/copilot/<timestamp>/ folder
+
+        # 核心滚动优化：自动吸附底部状态
+        self._auto_scroll_to_bottom = True
 
         # 核心性能优化：UI 渲染节流时间戳
         self._last_render_ts = 0.0
@@ -182,6 +269,11 @@ class LlmCopilotWidget(QWidget):
         self.history_browser.setOpenLinks(False)
         self.history_browser.anchorClicked.connect(self._on_anchor_clicked)
         self.history_browser.setStyleSheet(CHAT_HISTORY_QSS)
+
+        # 监听用户滚动行为：向上翻看时暂停自动滚底，翻回底部时恢复吸附
+        sb = self.history_browser.verticalScrollBar()
+        sb.sliderMoved.connect(self._on_user_scroll)
+
         layout.addWidget(self.history_browser, stretch=1)
 
         # -- 输入区域卡片 --
@@ -201,11 +293,6 @@ class LlmCopilotWidget(QWidget):
         bottom_toolbar = QHBoxLayout()
         bottom_toolbar.setSpacing(6)
 
-        # self.btn_key = QPushButton("🔑 账号 / 额度")
-        # self.btn_key.setToolTip("管理登录凭证及账户额度")
-        # self.btn_key.setStyleSheet(BTN_KEY_QSS)
-        # self.btn_key.clicked.connect(self.dock.show_account_page)
-        # bottom_toolbar.addWidget(self.btn_key)
         self.btn_select = QPushButton("🗺 框选范围")
         self.btn_select.setToolTip("点击后在地图上拖拽框选全局解译范围（全局生效，AI 解译页自动使用；未框选时自动使用当前视图范围）")
         self.btn_select.setStyleSheet(BTN_TOOLS_QSS)
@@ -218,11 +305,6 @@ class LlmCopilotWidget(QWidget):
         self._build_tools_menu()
         bottom_toolbar.addWidget(self.btn_tools)
 
-        # self.selection_chip = QLabel("🗺 未选图层 · 未框选范围")
-        # self.selection_chip.setObjectName("noticeBanner")
-        # self.selection_chip.setToolTip("主页全局图层/范围选择状态，可点击「图层 / 范围」修改")
-        # bottom_toolbar.addWidget(self.selection_chip)
-
         bottom_toolbar.addStretch()
 
         self.send_btn = QPushButton("🚀 发送")
@@ -234,6 +316,14 @@ class LlmCopilotWidget(QWidget):
         layout.addWidget(input_card)
 
         self._reset_welcome_message()
+
+    def _on_user_scroll(self, value):
+        """用户手动滚轮/拖动条判断：远离底部则暂停吸附，靠近底部则恢复"""
+        sb = self.history_browser.verticalScrollBar()
+        if value < sb.maximum() - 80:
+            self._auto_scroll_to_bottom = False
+        else:
+            self._auto_scroll_to_bottom = True
 
     def _build_tools_menu(self):
         tools_menu = QMenu(self)
@@ -331,12 +421,12 @@ class LlmCopilotWidget(QWidget):
         elif link.startswith("http://") or link.startswith("https://"):
             QDesktopServices.openUrl(url)
 
-    # -- 核心 UI 渲染引擎 (带节流抗卡顿) --------------------------------------
+    # -- 核心 UI 渲染引擎 (带节流抗卡顿 + 智能吸附置底) ----------------------
 
     def _render_chat_ui(self, preserve_scroll: bool = False, force: bool = False):
         """
         高性能节流渲染器：
-        在 Token 高频输出时，最多每 60ms 刷新一次 DOM，避免 CPU 100% 满载卡死。
+        在 Token 高频输出时，最多每 60ms 刷新一次 DOM，并根据吸附状态平滑滚底。
         """
         now = time.time()
         if not force and (now - self._last_render_ts < 0.06):
@@ -345,13 +435,13 @@ class LlmCopilotWidget(QWidget):
 
         sb = self.history_browser.verticalScrollBar()
         old_val = sb.value()
-        is_at_bottom = (old_val >= sb.maximum() - 20)
+
+        # 智能吸附决策：若未显式要求保持旧滚动条，且用户处于跟随模式（或原先在底部附近）
+        should_stick = (not preserve_scroll) and (self._auto_scroll_to_bottom or (old_val >= sb.maximum() - 80))
 
         html_blocks = [
             "<div style='background-color:#f8fafc; border:1px solid #e2e8f0; "
-            "padding:12px 16px; margin:4px 0 10px 0; color:#334155; font-size:13px; line-height:1.6;'>"
-            # "<div style='font-weight:700; color:#0f172a; font-size:14px; margin-bottom:6px;'>"
-            # "🤖 GeoMind AI Copilot</div>"
+            "padding:10px 14px; margin:4px 0 8px 0; color:#334155; font-size:13px; line-height:1.5;'>"
             "<div style='margin-bottom:6px;'>🤖 我是您的智能遥感与 GIS 助手，您可以直接在下方输入自然语言指令。</div>"
             "<div><span style='background:#eff6ff; color:#1d4ed8; padding:2px 6px; font-size:11px; border:1px solid #bfdbfe;'>计算影像 NDVI</span> "
             "<span style='background:#eff6ff; color:#1d4ed8; padding:2px 6px; font-size:11px; border:1px solid #bfdbfe;'>水体提取与矢量化</span> "
@@ -366,8 +456,8 @@ class LlmCopilotWidget(QWidget):
                 safe_text = html.escape(item["content"]).replace("\n", "<br>")
                 html_blocks.append(
                     "<div style='background-color:#eff6ff; border:1px solid #dbeafe; border-left:3px solid #3b82f6; "
-                    "padding:9px 12px; margin:8px 0 4px 18px; color:#1e293b; font-size:13px; line-height:1.5;'>"
-                    "<div style='font-weight:700; color:#1d4ed8; font-size:12px; margin-bottom:3px;'>👤</div>"
+                    "padding:8px 12px; margin:6px 0 4px 18px; color:#1e293b; font-size:13px; line-height:1.45;'>"
+                    "<div style='font-weight:700; color:#1d4ed8; font-size:12px; margin-bottom:2px;'>👤</div>"
                     f"{safe_text}</div>"
                 )
 
@@ -378,9 +468,9 @@ class LlmCopilotWidget(QWidget):
                 pct = max(0, min(100, int(progress)))
                 html_blocks.append(
                     "<div style='background-color:#f0fdf4; border:1px solid #bbf7d0; border-left:3px solid #16a34a; "
-                    "padding:10px 12px; margin:8px 0; font-size:12px; line-height:1.5;'>"
-                    f"<div style='font-weight:700; color:#15803d; margin-bottom:6px;'>{icon} {html.escape(status_text)} ({pct}%)</div>"
-                    "<div style='background-color:#e2e8f0; border-radius:4px; height:8px; width:100%; overflow:hidden;'>"
+                    "padding:8px 12px; margin:6px 0; font-size:12px; line-height:1.45;'>"
+                    f"<div style='font-weight:700; color:#15803d; margin-bottom:4px;'>{icon} {html.escape(status_text)} ({pct}%)</div>"
+                    "<div style='background-color:#e2e8f0; border-radius:4px; height:6px; width:100%; overflow:hidden;'>"
                     f"<div style='background-color:#16a34a; width:{max(4, pct)}%; height:100%; border-radius:4px;'></div>"
                     "</div></div>"
                 )
@@ -388,13 +478,12 @@ class LlmCopilotWidget(QWidget):
             elif role == "system_error":
                 safe_text = html.escape(item["content"])
                 html_blocks.append(
-                    "<div style='margin:6px 0;'>"
-                    f"<span style='background:#fef2f2; color:#dc2626; border:1px solid #fecaca; padding:3px 8px; font-size:11px; font-weight:600;'>⚠️ {safe_text}</span></div>"
+                    "<div style='margin:4px 0;'>"
+                    f"<span style='background:#fef2f2; color:#dc2626; border:1px solid #fecaca; padding:2px 8px; font-size:11px; font-weight:600;'>⚠️ {safe_text}</span></div>"
                 )
 
             elif role == "assistant":
                 sub_blocks = []
-                # 正在进行中的生成（有活动 LLM 任务且是当前卡片）
                 is_live = (self._llm_task is not None
                            and self._current_assistant_item is not None
                            and item.get("id") == self._current_assistant_item.get("id"))
@@ -407,20 +496,20 @@ class LlmCopilotWidget(QWidget):
                     if is_collapsed:
                         think_label = "⏳ 思考中" if is_live else "▶ 🤔 模型思考过程"
                         sub_blocks.append(
-                            "<div style='margin:4px 0;'>"
+                            "<div style='margin:3px 0;'>"
                             f"<a href='toggle:reasoning:{item_id}' style='text-decoration:none; color:#64748b; font-size:11px; font-weight:600; "
-                            "background-color:#f1f5f9; border:1px solid #e2e8f0; border-radius:4px; padding:3px 8px; display:inline-block;'>"
+                            "background-color:#f1f5f9; border:1px solid #e2e8f0; border-radius:4px; padding:2px 6px; display:inline-block;'>"
                             f"{think_label} ({char_count} 字 · 点击展开)</a></div>"
                         )
                     else:
                         formatted_r = _render_mini_markdown(reasoning)
                         sub_blocks.append(
                             "<div style='background-color:#f8fafc; border:1px solid #e2e8f0; border-left:3px solid #94a3b8; "
-                            "padding:8px 10px; margin:6px 0;'>"
-                            "<div style='margin-bottom:4px;'>"
+                            "padding:6px 10px; margin:4px 0;'>"
+                            "<div style='margin-bottom:3px;'>"
                             f"<a href='toggle:reasoning:{item_id}' style='text-decoration:none; color:#475569; font-size:11px; font-weight:700;'>"
                             "▼ 🤔 模型思考过程 (点击折叠)</a></div>"
-                            f"<div style='color:#64748b; font-size:11px; line-height:1.5;'>{formatted_r}</div></div>"
+                            f"<div style='color:#64748b; font-size:11px; line-height:1.45;'>{formatted_r}</div></div>"
                         )
 
                 # (B) 工具调用与处理进度
@@ -430,9 +519,9 @@ class LlmCopilotWidget(QWidget):
                     tool_count = len(tools)
                     if is_tools_collapsed:
                         sub_blocks.append(
-                            "<div style='margin:4px 0;'>"
+                            "<div style='margin:3px 0;'>"
                             f"<a href='toggle:tools:{item_id}' style='text-decoration:none; color:#0369a1; font-size:11px; font-weight:600; "
-                            "background-color:#f0f9ff; border:1px solid #bae6fd; border-radius:4px; padding:3px 8px; display:inline-block;'>"
+                            "background-color:#f0f9ff; border:1px solid #bae6fd; border-radius:4px; padding:2px 6px; display:inline-block;'>"
                             f"▶ ⚙️ 处理进度 (已执行 {tool_count} 个步骤 · 点击展开)</a></div>"
                         )
                     else:
@@ -454,11 +543,11 @@ class LlmCopilotWidget(QWidget):
 
                         sub_blocks.append(
                             "<div style='background-color:#f8fafc; border:1px solid #e0f2fe; border-left:3px solid #0284c7; "
-                            "padding:6px 10px; margin:6px 0;'>"
-                            "<div style='margin-bottom:4px;'>"
+                            "padding:6px 10px; margin:4px 0;'>"
+                            "<div style='margin-bottom:3px;'>"
                             f"<a href='toggle:tools:{item_id}' style='text-decoration:none; color:#0369a1; font-size:11px; font-weight:700;'>"
                             "▼ ⚙️ 工具与空间处理进度 (点击折叠)</a></div>"
-                            f"<div style='font-size:11px; line-height:1.5;'>{''.join(tool_lines)}</div></div>"
+                            f"<div style='font-size:11px; line-height:1.45;'>{''.join(tool_lines)}</div></div>"
                         )
 
                 # (C) 回复正文卡片
@@ -467,13 +556,12 @@ class LlmCopilotWidget(QWidget):
                     formatted_c = _render_mini_markdown(content)
                     sub_blocks.append(
                         "<div style='background-color:#f8fafc; border:1px solid #e2e8f0; border-left:3px solid #2563eb; "
-                        "padding:10px 14px; margin:8px 18px 4px 0; color:#1e293b; font-size:13px; line-height:1.55;'>"
-                        "<div style='font-weight:700; color:#0f172a; font-size:12px; margin-bottom:4px;'>GeoMind Copilot</div>"
+                        "padding:8px 12px; margin:6px 18px 4px 0; color:#1e293b; font-size:13px; line-height:1.5;'>"
+                        "<div style='font-weight:700; color:#0f172a; font-size:12px; margin-bottom:3px;'>GeoMind Copilot</div>"
                         f"<div>{formatted_c}</div></div>"
                     )
 
-                # (D) 思考中占位提示：模型生成中且尚无任何输出时，
-                #     避免界面一片空白让人误以为已经运行完
+                # (D) 思考中占位提示
                 if is_live and not content and not reasoning:
                     sub_blocks.append(
                         "<div style='margin:6px 18px 4px 0; color:#64748b; font-size:12px;'>"
@@ -485,13 +573,21 @@ class LlmCopilotWidget(QWidget):
 
         self.history_browser.setHtml("".join(html_blocks))
 
-        # 视口跟随策略：用户贴近底部时跟随最新输出；正在上翻阅读历史时
-        # 保持滚动条位置不变，避免每 60ms 一个 chunk 就把视口拽回底部
-        # （表现为界面一跳一跳来回晃）。
-        if is_at_bottom:
+        # 滚底分发
+        if should_stick:
             self._scroll_to_bottom()
         else:
             sb.setValue(old_val)
+
+    def _scroll_to_bottom(self):
+        """双保险置底：不仅同步设置数值，还通过移动光标保证在布局完成瞬间牢牢吸附在底部"""
+        sb = self.history_browser.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        cursor = self.history_browser.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.history_browser.setTextCursor(cursor)
+        # 单次事件循环微延迟保底，化解 setHtml 异步布局时延
+        QTimer.singleShot(20, lambda: sb.setValue(sb.maximum()))
 
     def _reset_welcome_message(self):
         self.display_items = []
@@ -499,16 +595,13 @@ class LlmCopilotWidget(QWidget):
         self._progress_timer.stop()
         self._consecutive_tool_calls = []
         self._active_ai_tasks.clear()
+        self._auto_scroll_to_bottom = True
         self._render_chat_ui(force=True)
 
     # -- 会话持久化（历史记录 / 回溯） ---------------------------------------
 
     def _append_chat(self, msg: dict, extra: dict = None):
-        """Append to in-memory history and persist to the Copilot session folder.
-
-        ``extra`` carries structured metadata (e.g. ``result_path`` of an AI
-        interpretation run) so the history page can show the actual outputs.
-        """
+        """Append to in-memory history and persist to the Copilot session folder."""
         self.chat_history.append(msg)
         try:
             if self._chat_session_dir is None:
@@ -524,11 +617,7 @@ class LlmCopilotWidget(QWidget):
             logger.debug("Failed to persist chat message: %s", exc)
 
     def load_chat_session(self, session_dir: str):
-        """Restore a saved Copilot session into the chat view for re-running.
-
-        Rebuilds the visible conversation from the session jsonl and keeps the
-        session folder open so follow-up messages append to the same record.
-        """
+        """Restore a saved Copilot session into the chat view for re-running."""
         if not session_dir:
             return
         messages = history_store.read_session_chat(session_dir)
@@ -558,6 +647,7 @@ class LlmCopilotWidget(QWidget):
                 })
                 self.chat_history.append({"role": "assistant", "content": content})
         self._chat_session_dir = session_dir
+        self._auto_scroll_to_bottom = True
         self._reset_btn()
         self._render_chat_ui(force=True)
 
@@ -587,6 +677,7 @@ class LlmCopilotWidget(QWidget):
         self._active_ai_tasks.clear()
         self._current_assistant_item = None
         self._current_progress_item_id = None
+        self._auto_scroll_to_bottom = True
         self._reset_welcome_message()
         self._reset_btn()
 
@@ -646,6 +737,9 @@ class LlmCopilotWidget(QWidget):
         self.input_edit.clear()
         self._consecutive_tool_calls = []
 
+        # 用户发起新指令，强制重新激活底部吸附
+        self._auto_scroll_to_bottom = True
+
         user_msg_id = f"user_{time.time()}"
         self.display_items.append({"id": user_msg_id, "role": "user", "content": text})
         self._append_chat({"role": "user", "content": text})
@@ -672,8 +766,6 @@ class LlmCopilotWidget(QWidget):
     def _request_backend_copilot(self):
         self._sanitize_chat_history()
 
-        # 把待发送的地图画布截图注入为一条带图 user 消息（仅本次请求，
-        # 不写入持久化历史，避免 base64 图片膨胀 chat.jsonl）
         send_messages = list(self.chat_history)
         shot = take_pending_screenshot()
         if shot:
@@ -694,7 +786,6 @@ class LlmCopilotWidget(QWidget):
         task.taskFinished.connect(self._on_copilot_finished)
 
         self._llm_task = task
-        # 请求一发出立即渲染一次，让“正在思考”占位提示立刻可见
         self._render_chat_ui(force=True)
         QgsApplication.taskManager().addTask(task)
 
@@ -715,7 +806,6 @@ class LlmCopilotWidget(QWidget):
         elif msg_type == "reasoning" and content:
             self._current_assistant_item["reasoning"] += content
             self._current_assistant_item["round_reasoning"] += content
-            # 使用节流渲染，极大减轻卡顿
             self._render_chat_ui()
 
         elif msg_type == "text" and content:
@@ -724,7 +814,6 @@ class LlmCopilotWidget(QWidget):
 
             self._current_assistant_item["content"] += content
             self._current_assistant_item["round_content"] += content
-            # 使用节流渲染，极大减轻卡顿
             self._render_chat_ui()
 
         elif msg_type == "tool_call":
@@ -768,7 +857,6 @@ class LlmCopilotWidget(QWidget):
                     tool_record["result"] = str(e)
                     res = f"执行报错: {e}"
 
-                # 特殊步骤自动截图：图层加载/计算结果成功后给模型视觉参考
                 if (fn_name in _AUTO_CAPTURE_SKILLS
                         and tool_record["status"] == "ok"
                         and _looks_successful(res)):
@@ -786,7 +874,6 @@ class LlmCopilotWidget(QWidget):
             self._request_backend_copilot()
 
     def _on_copilot_finished(self):
-        # 1. 标记 LLM 任务已完全结束
         self._llm_task = None
 
         if self._current_assistant_item:
@@ -808,7 +895,6 @@ class LlmCopilotWidget(QWidget):
         self._reset_btn()
 
     def _on_copilot_error(self, err_msg: str):
-        # 1. 标记 LLM 任务已结束
         self._llm_task = None
 
         self.display_items.append(
@@ -829,7 +915,6 @@ class LlmCopilotWidget(QWidget):
         token = session.token
         machine_id = session.machine_id
 
-        # 刷新事件队列，防止网络请求前界面被判定为卡死
         QCoreApplication.processEvents()
 
         # 核心防刷死锁拦截
@@ -843,7 +928,6 @@ class LlmCopilotWidget(QWidget):
             canvas = self.dock.canvas
             _, global_extent = self.dock.global_selection()
             if global_extent is not None:
-                # 优先使用主页框选/选定的范围，而不是当前地图视口。
                 extent = global_extent
                 extent_crs = canvas.mapSettings().destinationCrs()
             else:
@@ -938,7 +1022,7 @@ class LlmCopilotWidget(QWidget):
             QgsApplication.taskManager().addTask(task)
             return AI_TASK_SUBMITTED.format(task_name=task_semantic_name)
 
-        # 2. 本地算子经白名单注册表执行（拒绝未注册的任意函数名）
+        # 2. 本地算子经白名单注册表执行
         spec = get_skill(fn_name)
         if spec is None:
             return f"未找到可执行工具或工具未在白名单注册: {fn_name}"
@@ -1019,7 +1103,6 @@ class LlmCopilotWidget(QWidget):
 
         if new_layer.isValid():
             QgsProject.instance().addMapLayer(new_layer)
-            # 特殊步骤：AI 解译结果加载后给模型视觉参考
             queue_map_screenshot(reason=f"AI 解译结果已加载: {layer_name}")
             self.display_items.append({
                 "id": f"ai_ok_{time.time()}",
@@ -1037,22 +1120,17 @@ class LlmCopilotWidget(QWidget):
                 "content": f"【{semantic_name}】结果图层加载失败"
             })
 
-        # =========================================================================
-        # 当本批次所有异步 AI 任务全部执行完成时
-        # =========================================================================
         if not self._active_ai_tasks:
             self._progress_timer.stop()
             if self._current_progress_item_id:
                 self.display_items = [item for item in self.display_items if item.get("id") != self._current_progress_item_id]
                 self._current_progress_item_id = None
 
-            # 1. 注入一条系统自动推进指令（明确告知模型图层已就绪，继续执行后续步骤）
             self._append_chat({
                 "role": "user",
                 "content": "【系统自动推进】本批次所有后台解译图层均已加载完毕。请检查用户最初的需求中是否还有未完成的后续步骤（如缓冲区分析、空间相交叠置、面积统计等），请立即调用相应工具继续执行；如果已全部完成，请直接输出分析总结汇报。"
             })
 
-            # 2. 准备新的 Assistant 消息卡片
             self._current_assistant_item = {
                 "id": f"asst_{time.time()}",
                 "role": "assistant",
@@ -1066,15 +1144,12 @@ class LlmCopilotWidget(QWidget):
             }
             self.display_items.append(self._current_assistant_item)
 
-            # 3. 更新按钮状态为“思考中”并允许用户中断
             self.send_btn.setEnabled(False)
             self.send_btn.setText("思考中...")
             self.stop_btn.setEnabled(True)
 
-            # 4. 立即唤醒大模型发起下一轮自动执行
             self._request_backend_copilot()
         else:
-            # 还有其他并发任务在跑，仅重置渲染
             self._render_chat_ui(force=True)
 
         self._render_chat_ui(force=True)
@@ -1095,13 +1170,6 @@ class LlmCopilotWidget(QWidget):
         self._render_chat_ui(force=True)
 
     # -- 辅助方法 -----------------------------------------------------------
-
-    def _scroll_to_bottom(self):
-        """同步置底。setHtml 后滚动条范围已随布局同步更新，
-        直接 setValue(maximum) 即可；不要再加延迟 singleShot
-        （延迟置底会与 60ms 节流渲染互相竞争，导致视口来回跳）。"""
-        sb = self.history_browser.verticalScrollBar()
-        sb.setValue(sb.maximum())
 
     def _reset_btn(self):
         if not self._active_ai_tasks and self._llm_task is None:

@@ -8,10 +8,11 @@ was imported). All tunable runtime values are now resolved lazily here,
 so loading the plugin never blocks on the network.
 
 Backend URL & Xianyu URL resolution chain (first hit wins):
-    1. user override in QSettings            (SETTINGS_KEY_SERVER_URL) [仅 server_url]
-    2. local ``server_config.json``          (shipped with the plugin)
-    3. remote config endpoint                (lazy fetch, cached in-process)
-    4. built-in fallback URL                 (FALLBACK_SERVER_URL / FALLBACK_XIANYU_URL)
+    1. custom mode: user configured custom URL (custom_gateway_url)
+    2. cloud mode:
+        a. local ``server_config.json`` (shipped with the plugin)
+        b. remote config endpoint (lazy fetch, cached in-process)
+        c. built-in fallback URL (FALLBACK_SERVER_URL / FALLBACK_XIANYU_URL)
 """
 import json
 import os
@@ -38,17 +39,12 @@ def _plugin_dir() -> str:
     """Resolve the plugin root directory (``geomind_ai/``) exactly once."""
     global _PLUGIN_DIR_CACHE
     if _PLUGIN_DIR_CACHE is None:
-        # core/config.py -> geomind_ai/core/ -> geomind_ai/
         _PLUGIN_DIR_CACHE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return _PLUGIN_DIR_CACHE
 
 
 def _fetch_remote_config() -> Optional[Dict[str, Any]]:
-    """Fetch the remote config dict with multi-source fallback.
-
-    Called lazily (never at import time) and only when no local source
-    resolved the backend URL first.
-    """
+    """Fetch the remote config dict with multi-source fallback."""
     timestamp = int(time.time())
     for url in REMOTE_CONFIG_URLS:
         try:
@@ -80,9 +76,14 @@ class Settings:
     # ------------------------------------------------------------------
     def server_url(self, force_refresh: bool = False) -> str:
         """Return the effective backend URL without ever blocking import."""
-        override = self._user_override()
-        if override:
-            return override
+        # 1. 优先判断是否为本地/私有网关模式
+        mode = self.gateway_mode()
+        if mode == "custom":
+            custom_url = self.custom_server_url()
+            if custom_url:
+                return custom_url
+
+        # 2. 如果是云端模式 (cloud)，走原有解析链
         local = self._local_file_value("server_url")
         if local:
             return local
@@ -90,6 +91,39 @@ class Settings:
         if remote:
             return str(remote).strip().rstrip("/")
         return FALLBACK_SERVER_URL
+
+    def gateway_mode(self) -> str:
+        """获取网关模式: 'cloud' (云端) 或 'custom' (本地私有)"""
+        try:
+            from qgis.PyQt.QtCore import QSettings
+            qs = QSettings(SETTINGS_ORG, SETTINGS_APP)
+            return qs.value("gateway_mode", "cloud")
+        except Exception:
+            return "cloud"
+
+    def custom_server_url(self) -> Optional[str]:
+        """获取保存的本地/私有服务器地址"""
+        try:
+            from qgis.PyQt.QtCore import QSettings
+            qs = QSettings(SETTINGS_ORG, SETTINGS_APP)
+            raw = qs.value("custom_gateway_url", "http://127.0.0.1:8000")
+            val = str(raw or "").strip().rstrip("/")
+            return val or None
+        except Exception:
+            return None
+
+    def set_gateway(self, mode: str, custom_url: Optional[str] = None):
+        """统一持久化存储网关设置"""
+        try:
+            from qgis.PyQt.QtCore import QSettings
+            qs = QSettings(SETTINGS_ORG, SETTINGS_APP)
+            qs.setValue("gateway_mode", mode)
+            if custom_url is not None:
+                cleaned = str(custom_url).strip().rstrip("/")
+                qs.setValue("custom_gateway_url", cleaned)
+                qs.setValue(SETTINGS_KEY_SERVER_URL, cleaned)
+        except Exception as exc:
+            logger.error("Failed to save gateway settings: %s", exc)
 
     # ------------------------------------------------------------------
     # Xianyu URL resolution
@@ -103,16 +137,6 @@ class Settings:
         if remote:
             return str(remote).strip()
         return FALLBACK_XIANYU_URL
-
-    def _user_override(self) -> Optional[str]:
-        """QSettings override configured by the user in the settings page."""
-        try:
-            from qgis.PyQt.QtCore import QSettings
-            raw = QSettings(SETTINGS_ORG, SETTINGS_APP).value(SETTINGS_KEY_SERVER_URL, "")
-            val = str(raw or "").strip().rstrip("/")
-            return val or None
-        except Exception:
-            return None
 
     def tianditu_api_key(self) -> str:
         """Resolve the Tianditu geocoding key at runtime (env > QSettings > local file)."""
@@ -155,5 +179,5 @@ class Settings:
             return self._cached_remote_config or {}
 
 
-# Module-level singleton consumed across the code base.
+# 全局单例
 settings = Settings()
