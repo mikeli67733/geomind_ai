@@ -268,9 +268,12 @@ class ImageInterpretDockWidget(QDockWidget):
     def show_monitor_page(self):
         """Enter the 7x24 monitor page."""
         self.stack.setCurrentIndex(3)
-        self.brand_logo.setVisible(True)
-        self.title_label.setText("🛰 7×24 监控助手")
-        self.subtitle_label.setText("哨兵定时分析 · 企业微信推送")
+        # self.brand_logo.setVisible(True)
+        # self.title_label.setText("🛰 7×24 监控助手")
+        # self.subtitle_label.setText("哨兵定时分析 · 企业微信推送")
+        self.brand_logo.setVisible(False)  # 隐藏图标
+        self.subtitle_label.setText("")
+        self.title_label.setText("")
         self.back_btn.setVisible(True)
         self.account_btn.setVisible(True)
         self.history_btn.setVisible(True)
