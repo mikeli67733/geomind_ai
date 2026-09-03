@@ -37,6 +37,7 @@ from .account_page import AccountSettingsPage
 from .history_page import HistoryPage
 from .login_dialog import LoginDialog
 from .plan_dialog import PlanDialog
+from .monitor_page import MonitorPage
 from .base_task_widget import (
     LanduseMultiTaskWidget,
     SingleThemeExtractionWidget,
@@ -76,6 +77,8 @@ class ImageInterpretDockWidget(QDockWidget):
         self.global_extent = None
 
         self._build_ui()
+        # 恢复 7x24 监控任务并自动续跑（QGIS 重启后续跑）
+        self.monitor_page.restore_jobs()
         self._load_settings()
         self._restore_dock_state()
         self._try_restore_login()
@@ -157,7 +160,11 @@ class ImageInterpretDockWidget(QDockWidget):
         self.history_page = HistoryPage(self)
         self.stack.addWidget(self.history_page)
 
-        # Free local tools (indexes 2-11)
+        # Index 3: 7x24 monitor page
+        self.monitor_page = MonitorPage(self)
+        self.stack.addWidget(self.monitor_page)
+
+        # Free local tools
         self.task_pages = {}
         for page_key, title, factory in LOCAL_TOOL_PAGES:
             self._register_page(page_key, title, factory(self))
@@ -257,6 +264,17 @@ class ImageInterpretDockWidget(QDockWidget):
             self.history_page.set_page_filter(filter_key)
         else:
             self.history_page.refresh(keep_selection=False)
+
+    def show_monitor_page(self):
+        """Enter the 7x24 monitor page."""
+        self.stack.setCurrentIndex(3)
+        self.brand_logo.setVisible(True)
+        self.title_label.setText("🛰 7×24 监控助手")
+        self.subtitle_label.setText("哨兵定时分析 · 企业微信推送")
+        self.back_btn.setVisible(True)
+        self.account_btn.setVisible(True)
+        self.history_btn.setVisible(True)
+        self.monitor_page._refresh_list()
 
     def prefill_page_params(self, page_key: str, params: dict) -> None:
         """Ask a registered page to apply saved parameters (memory prefill)."""

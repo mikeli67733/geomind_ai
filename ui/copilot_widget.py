@@ -271,6 +271,11 @@ class LlmCopilotWidget(QWidget):
             act = ai_menu.addAction(title)
             act.triggered.connect(lambda chk=False, k=key: self.dock.navigate_to_task(k))
 
+        tools_menu.addSeparator()
+        monitor_act = tools_menu.addAction("🛰 7×24 监控助手（定时监测 · 企业微信推送）")
+        monitor_act.triggered.connect(
+            lambda chk=False: self.dock.show_monitor_page())
+
         self.btn_tools.setMenu(tools_menu)
 
     # -- 主页全局「图层 / 范围」选择 -------------------------------------------

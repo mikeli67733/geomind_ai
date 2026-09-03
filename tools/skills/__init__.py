@@ -17,6 +17,7 @@ from . import ai_tasks as _ai
 from . import qgis_ops as _qgis
 from . import web as _web
 from . import map_screenshot as _shots
+from . import inspect_dir as _inspect  # <--- 【新增】导入本地目录检索模块
 
 _A = _analysis
 _FI = _imagery
@@ -28,6 +29,10 @@ register("get_active_layers", _layers.get_active_layers,
          "读取当前图层列表与物理画像", "local")
 register("skill_geocode_address", _geocode.skill_geocode_address,
          "地名地址解析与地图定位", "local")
+
+# 【新增】注册本地工作目录扫描读取技能（纯静默、绝不加载到画布）
+register("skill_scan_work_directory", _inspect.skill_scan_work_directory,
+         "读取本地工作目录成果文件清单与元数据", "local")
 
 register("skill_fetch_sentinel2_imagery", _FI.skill_fetch_sentinel2_imagery,
          "检索并流式加载 Sentinel-2 影像", "local")
@@ -107,6 +112,7 @@ from .layers import get_layer_by_name, _inspect_raster_profile  # noqa: F401
 from .common import _validate_bbox, _get_target_bbox  # noqa: F401
 from .fetch_imagery import search_and_load_sentinel2, STAC_AWS_URL  # noqa: F401
 from .fetch_vector import OVERPASS_SERVERS  # noqa: F401
+from .inspect_dir import skill_scan_work_directory  # noqa: F401
 
 __all__ = [
     "get_layer_by_name",
@@ -116,4 +122,5 @@ __all__ = [
     "search_and_load_sentinel2",
     "STAC_AWS_URL",
     "OVERPASS_SERVERS",
+    "skill_scan_work_directory",
 ]
