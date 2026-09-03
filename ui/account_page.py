@@ -2,6 +2,8 @@
 """
 Account settings page — user info, quota display, gateway refresh.
 """
+from qgis.PyQt.QtCore import QUrl
+from qgis.PyQt.QtGui import QDesktopServices
 from qgis.PyQt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
     QMessageBox, QApplication, QRadioButton, QLineEdit, QButtonGroup
@@ -29,6 +31,7 @@ class AccountSettingsPage(QWidget):
         # 1. User info card
         # ----------------------------------------------------
         acc_group = QGroupBox("用户信息与凭证")
+        acc_group.setStyleSheet("QGroupBox::title { top: 18px; }")
         acc_layout = QVBoxLayout(acc_group)
 
         self.account_status_label = QLabel("尚未登录")
@@ -60,6 +63,7 @@ class AccountSettingsPage(QWidget):
         # 2. Network & server gateway status
         # ----------------------------------------------------
         server_group = QGroupBox("服务网关配置")
+        server_group.setStyleSheet("QGroupBox::title { top: 18px; }")
         server_layout = QVBoxLayout(server_group)
         server_layout.setSpacing(10)
 
@@ -103,6 +107,7 @@ class AccountSettingsPage(QWidget):
         custom_layout.setContentsMargins(20, 0, 0, 0)
         custom_layout.setSpacing(6)
 
+        # 本地服务地址输入栏
         custom_input_row = QHBoxLayout()
         self.custom_url_edit = QLineEdit()
         self.custom_url_edit.setPlaceholderText("例如: http://127.0.0.1:8000")
@@ -113,6 +118,27 @@ class AccountSettingsPage(QWidget):
         custom_input_row.addWidget(self.save_custom_btn)
         custom_layout.addLayout(custom_input_row)
 
+        # ------------------- 新增：安装包下载与硬件要求提示 -------------------
+        pack_row = QHBoxLayout()
+        pack_row.setSpacing(8)
+
+        self.pack_download_btn = QPushButton("📦 获取本地私有服务安装包")
+        self.pack_download_btn.setStyleSheet(
+            "QPushButton { background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 4px; padding: 4px 10px; color: #1e293b; }"
+            "QPushButton:hover { background-color: #e2e8f0; color: #0f172a; }"
+        )
+        self.pack_download_btn.clicked.connect(self._download_pack)
+        pack_row.addWidget(self.pack_download_btn)
+        pack_row.addStretch()
+        custom_layout.addLayout(pack_row)
+
+        # 硬件配置警告提示
+        self.pack_hw_notice = QLabel("⚠️ 运行环境要求：本地大模型与AI解译模型计算负载较高，请在 24G 显卡（GPU）上运行。")
+        self.pack_hw_notice.setStyleSheet("color: #e11d48; font-size: 11px; font-weight: bold;")
+        self.pack_hw_notice.setWordWrap(True)
+        custom_layout.addWidget(self.pack_hw_notice)
+        # -------------------------------------------------------------------
+
         server_layout.addWidget(custom_container)
         self.custom_container = custom_container
 
@@ -122,6 +148,14 @@ class AccountSettingsPage(QWidget):
         layout.addWidget(server_group)
         layout.addStretch()
 
+    def _download_pack(self):
+        """点击按钮跳转下载本地安装包"""
+        pack_url = settings.pack_url()
+        if not pack_url:
+            QMessageBox.warning(self, "提示", "暂未配置安装包下载地址，请联系管理员获取！")
+            return
+        QDesktopServices.openUrl(QUrl(pack_url))
+
     # ----------------------------------------------------
     # 网关配置逻辑处理
     # ----------------------------------------------------
@@ -130,7 +164,6 @@ class AccountSettingsPage(QWidget):
         mode = settings.gateway_mode()
         custom_url = settings.custom_server_url() or "http://127.0.0.1:8000"
 
-        # 临时断开信号连接，避免加载时反复触发保存逻辑
         self.radio_cloud.blockSignals(True)
         self.radio_custom.blockSignals(True)
 
@@ -173,7 +206,6 @@ class AccountSettingsPage(QWidget):
         self.refresh_url_btn.setText("正在同步网关...")
         QApplication.processEvents()
         try:
-            # 强制从云端动态节点刷新
             new_url = settings.server_url(force_refresh=True)
             self._apply_active_gateway(new_url, is_custom=False)
             QMessageBox.information(self, "成功", "已成功同步并接入最新的官方服务通道！")
@@ -190,17 +222,13 @@ class AccountSettingsPage(QWidget):
             QMessageBox.warning(self, "提示", "请输入有效的服务器地址！")
             return
 
-        # 补全协议头
         if not (url.startswith("http://") or url.startswith("https://")):
             url = "http://" + url
             self.custom_url_edit.setText(url)
 
         url = url.rstrip("/")
-
-        # 写入底层 Settings 统一配置并切换模式
         settings.set_gateway(mode="custom", custom_url=url)
 
-        # 确保单选框切换
         if not self.radio_custom.isChecked():
             self.radio_custom.setChecked(True)
         else:
@@ -218,7 +246,7 @@ class AccountSettingsPage(QWidget):
         self._update_current_url_display(url, is_custom)
 
     def _update_current_url_display(self, url, is_custom=False):
-        """更新状态栏展示（云端模式脱敏隐藏真实URL）"""
+        """更新状态栏展示"""
         if is_custom:
             self.current_url_label.setText(
                 f"当前生效网关: <b style='color: #475569;'>[本地/私有]</b> "

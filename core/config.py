@@ -178,6 +178,11 @@ class Settings:
             self._remote_fetched = True
             return self._cached_remote_config or {}
 
+    def pack_url(self, force_refresh: bool = False) -> str:
+        remote = self._remote_config(force_refresh=force_refresh).get("pack_url")
+        if remote:
+            return str(remote).strip()
+
 
 # 全局单例
 settings = Settings()

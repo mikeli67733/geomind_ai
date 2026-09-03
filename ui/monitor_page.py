@@ -115,7 +115,8 @@ class MonitorPage(QWidget):
         layout.setSpacing(8)
 
         # ---- 任务配置卡片 ----
-        cfg_group = QGroupBox("🛰 新建后台静默监控任务")
+        cfg_group = QGroupBox("新建后台静默监控任务")
+        cfg_group.setStyleSheet("QGroupBox::title { top: 18px; }")
         cfg_layout = QVBoxLayout(cfg_group)
         cfg_layout.setSpacing(6)
 
@@ -249,6 +250,7 @@ class MonitorPage(QWidget):
 
         # ---- 任务列表 ----
         list_group = QGroupBox("后台监控列表")
+        list_group.setStyleSheet("QGroupBox::title { top: 18px; }")
         list_layout = QVBoxLayout(list_group)
         self.job_list = QListWidget()
         self.job_list.currentItemChanged.connect(self._on_select_job)
